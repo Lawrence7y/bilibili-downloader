@@ -1,0 +1,4 @@
+yt-dlp>=2026.3.0
+browser-cookie3>=0.20.1
+python-vlc>=3.0.21203
+playwright>=1.52.0

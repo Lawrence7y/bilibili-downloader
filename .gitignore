@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+build/
+dist/
+downloads/
+installer/cache/
+installer/stage/
+installer/output/
+
+*.log
+settings.json
+history.json
