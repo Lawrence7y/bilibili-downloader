@@ -30,6 +30,14 @@ A powerful Windows desktop/CLI tool for batch downloading videos from **Bilibili
 | **Generic Web** | Playwright + ffmpeg for non-Bilibili/Douyin video pages |
 | **Self-Repair** | One-click environment check and auto-fix |
 
+### 📸 Screenshots
+
+**Main Interface**
+![Main Interface](screenshots/main-interface.png)
+
+**Settings Panel**
+![Settings Panel](screenshots/settings-panel.png)
+
 ### 🏗 Architecture
 
 ```
