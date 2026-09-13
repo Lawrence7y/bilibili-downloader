@@ -319,21 +319,57 @@
 
         <!-- 页面三：实时任务看板 Tasks -->
         <section v-if="currentTab === 'tasks'" class="flex-1 overflow-y-auto p-8 max-w-5xl mx-auto w-full space-y-6">
-          <div class="flex items-center justify-between">
+          <div class="flex items-center justify-between gap-4 flex-wrap">
             <div>
               <h2 class="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">下载任务</h2>
               <p class="text-sm text-slate-500 dark:text-slate-400">基于 Rust Tokio 异步并发执行，WebSocket 实时毫秒级进度同步</p>
             </div>
+
+            <!-- 正在下载 / 已完成 切换 -->
+            <div class="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1">
+              <button
+                @click="taskView = 'active'"
+                :class="[
+                  'px-4 py-2 rounded-lg text-xs font-semibold transition flex items-center gap-1.5',
+                  taskView === 'active'
+                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                ]"
+              >
+                正在下载
+                <span
+                  v-if="activeTaskCount > 0"
+                  class="px-1.5 py-0.5 text-[10px] rounded-full bg-indigo-600 text-white"
+                >{{ activeTaskCount }}</span>
+              </button>
+              <button
+                @click="taskView = 'done'"
+                :class="[
+                  'px-4 py-2 rounded-lg text-xs font-semibold transition flex items-center gap-1.5',
+                  taskView === 'done'
+                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                ]"
+              >
+                已完成
+                <span
+                  v-if="finishedTaskCount > 0"
+                  class="px-1.5 py-0.5 text-[10px] rounded-full bg-slate-500 text-white"
+                >{{ finishedTaskCount }}</span>
+              </button>
+            </div>
           </div>
 
-          <div v-if="tasks.length === 0" class="h-64 flex flex-col items-center justify-center border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-2xl text-slate-400 space-y-2">
+          <div v-if="visibleTasks.length === 0" class="h-64 flex flex-col items-center justify-center border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-2xl text-slate-400 space-y-2">
             <Inbox class="w-8 h-8 stroke-1" />
-            <span class="text-sm">当前暂无任何下载任务</span>
+            <span class="text-sm">
+              {{ taskView === 'active' ? '当前没有进行中的下载任务' : '暂无已完成/失败任务' }}
+            </span>
           </div>
 
           <div v-else class="space-y-3">
             <div
-              v-for="task in tasks"
+              v-for="task in visibleTasks"
               :key="task.task_id"
               class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-sm space-y-3"
             >
@@ -356,14 +392,14 @@
                     {{ formatSpeed(task.speed_bps) }}
                   </span>
                   <button
-                    v-if="task.status === 'downloading' || task.status === 'resolving' || task.status === 'merging'"
+                    v-if="['downloading', 'resolving', 'merging', 'pending'].includes(task.status)"
                     @click="cancelTask(task.task_id)"
                     class="px-2.5 py-1 text-xs rounded-lg text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40"
                   >
                     取消
                   </button>
                   <button
-                    v-if="task.can_retry && (task.status === 'failed' || task.status === 'cancelled' || task.status === 'completed')"
+                    v-if="task.can_retry && ['failed', 'cancelled', 'completed'].includes(task.status)"
                     @click="retryTask(task.task_id)"
                     class="px-2.5 py-1 text-xs rounded-lg text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 font-sans"
                   >
@@ -390,17 +426,20 @@
                 {{ task.output_path }}
               </p>
 
-              <!-- 进度条 -->
+              <!-- 进度条：进行中始终显示；已完成折叠为满条 -->
               <div class="space-y-1">
                 <div class="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
                   <div
-                    class="bg-indigo-600 h-full rounded-full transition-all duration-300"
-                    :style="{ width: `${task.percentage || 0}%` }"
+                    :class="[
+                      'h-full rounded-full transition-all duration-300',
+                      task.status === 'completed' ? 'bg-emerald-500' : 'bg-indigo-600'
+                    ]"
+                    :style="{ width: `${task.percentage || (task.status === 'completed' ? 100 : 0)}%` }"
                   ></div>
                 </div>
                 <div class="flex items-center justify-between text-[11px] text-slate-400 font-mono">
                   <span>{{ formatBytes(task.downloaded_bytes) }} / {{ formatBytes(task.total_bytes) }}</span>
-                  <span>{{ (task.percentage || 0).toFixed(1) }}%</span>
+                  <span>{{ (task.percentage || (task.status === 'completed' ? 100 : 0)).toFixed(1) }}%</span>
                 </div>
               </div>
             </div>
@@ -946,7 +985,19 @@ const enqueueSelectedBatch = async () => {
 
 // 3. 任务与 WebSocket 实时推送
 const tasks = ref([])
-const activeTaskCount = computed(() => tasks.value.filter(t => ['downloading', 'resolving', 'merging'].includes(t.status)).length)
+/** active | done */
+const taskView = ref('active')
+
+const ACTIVE_STATUSES = ['resolving', 'downloading', 'merging', 'pending']
+const isTaskActive = (t) => ACTIVE_STATUSES.includes(t?.status)
+
+const activeTasks = computed(() => tasks.value.filter(isTaskActive))
+const finishedTasks = computed(() => tasks.value.filter((t) => !isTaskActive(t)))
+const activeTaskCount = computed(() => activeTasks.value.length)
+const finishedTaskCount = computed(() => finishedTasks.value.length)
+const visibleTasks = computed(() =>
+  taskView.value === 'active' ? activeTasks.value : finishedTasks.value
+)
 
 const loadTasks = async () => {
   try {
