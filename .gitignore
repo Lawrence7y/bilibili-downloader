@@ -1,0 +1,55 @@
+# Legacy nested project (has its own .git) — not part of this repo
+bilibili-downloader/
+
+# Secrets / credentials
+cookies.txt
+**/cookies.txt
+*.cookie
+.env
+.env.*
+config.local.yaml
+config.local.yml
+
+# Runtime data
+downloads/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+logs/
+*.log
+
+# Rust
+target/
+**/*.rs.bk
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Packaging artifacts
+dist/
+build/
+*.spec.bak
+
+# Local notes / scratch
+.workbuddy/
+.claude/
+项目检查报告.md

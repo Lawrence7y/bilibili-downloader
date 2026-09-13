@@ -1,0 +1,27 @@
+[package]
+name = "core-engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.38", features = ["full"] }
+reqwest = { version = "0.12", features = ["stream", "json", "socks"] }
+rusqlite = { version = "0.31", features = ["bundled", "bundled-full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+futures-util = "0.3"
+bytes = "1.6"
+tokio-util = { version = "0.7", features = ["io"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+thiserror = "1.0"
+anyhow = "1.0"
+url = "2.5"
+regex = "1.10"
+chrono = { version = "0.4", features = ["serde"] }
+parking_lot = "0.12"
+which = "6.0"
+fastrand = "2.1"
+
+[dev-dependencies]
+tempfile = "3.10"
