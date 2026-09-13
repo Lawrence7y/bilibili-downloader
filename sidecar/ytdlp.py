@@ -185,14 +185,42 @@ def resolve_with_ytdlp(
         content_type="single_video",
         title=str(info.get("title", "")),
         author=str(info.get("uploader", "") or info.get("creator", "")),
-        author_id=str(info.get("uploader_id", "")),
+        author_id=str(info.get("uploader_id", "") or ""),
         url=url,
         duration=int(info.get("duration", 0) or 0),
-        cover_url=str(info.get("thumbnail", "")),
+        cover_url=str(info.get("thumbnail", "") or ""),
         streams=streams,
         extra={
             "id": info.get("id"),
             "view_count": info.get("view_count"),
             "like_count": info.get("like_count"),
+            "subtitles": _extract_subtitles(info),
         },
     )
+
+
+def _extract_subtitles(info: dict[str, Any]) -> list[dict[str, str]]:
+    """Pick best subtitle URL per language (prefer vtt/srt)."""
+    out: list[dict[str, str]] = []
+    subs = info.get("subtitles") or {}
+    auto = info.get("automatic_captions") or {}
+    for source in (subs, auto):
+        for lang, items in source.items():
+            if not isinstance(items, list):
+                continue
+            chosen = None
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                ext = str(item.get("ext", "")).lower()
+                url = item.get("url")
+                if not url:
+                    continue
+                if ext in ("vtt", "srt"):
+                    chosen = {"lang": str(lang), "ext": ext, "url": str(url)}
+                    break
+                if chosen is None:
+                    chosen = {"lang": str(lang), "ext": ext or "vtt", "url": str(url)}
+            if chosen:
+                out.append(chosen)
+    return out[:8]

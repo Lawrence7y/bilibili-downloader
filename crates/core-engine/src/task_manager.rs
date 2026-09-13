@@ -1,14 +1,14 @@
 use crate::db::Database;
 use crate::downloader::{ChunkedDownloader, DownloadProgress, RateLimiter};
 use crate::ffmpeg::FFmpegController;
-use crate::models::{DownloadRecord, TaskProgress, TaskStatus};
+use crate::models::{AppSettings, DownloadRecord, TaskProgress, TaskStatus};
 use crate::sidecar::SidecarClient;
 use anyhow::{bail, Context, Result};
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex, Semaphore};
@@ -16,6 +16,16 @@ use tracing::{error, info, warn};
 
 /// Finished tasks are kept in memory this long so late-joining UIs can still show them.
 const FINISHED_TASK_TTL: Duration = Duration::from_secs(15 * 60);
+const SETTINGS_KEY: &str = "app_settings";
+const MAX_CONCURRENT_HARD_CAP: usize = 32;
+
+/// Decrements the active-task counter when dropped.
+struct ActiveGuard(Arc<AtomicUsize>);
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateTaskRequest {
@@ -27,6 +37,10 @@ pub struct CreateTaskRequest {
     /// Preferred stream format_id from a prior /resolve call.
     #[serde(default)]
     pub format_id: Option<String>,
+    #[serde(default)]
+    pub download_cover: Option<bool>,
+    #[serde(default)]
+    pub download_subs: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -50,21 +64,27 @@ pub struct TaskManager {
     db: Arc<Database>,
     ffmpeg: Arc<FFmpegController>,
     limiter: RateLimiter,
+    /// Hard cap semaphore; actual concurrency limited by `max_concurrent`.
     concurrency_semaphore: Arc<Semaphore>,
+    active_tasks: Arc<AtomicUsize>,
+    max_concurrent: Arc<AtomicUsize>,
     progress_broadcast: broadcast::Sender<TaskProgress>,
     project_root: PathBuf,
+    settings: Arc<Mutex<AppSettings>>,
 }
 
 impl TaskManager {
     pub fn new(
         sidecar: Arc<SidecarClient>,
         db: Arc<Database>,
-        max_concurrent_tasks: usize,
+        _max_concurrent_tasks: usize,
         project_root: PathBuf,
     ) -> Result<Self> {
         let (tx, _) = broadcast::channel(500);
         let ffmpeg = Arc::new(FFmpegController::new()?);
-        let limiter = RateLimiter::new(0); // 0 = unlimited
+        let loaded = Self::load_settings_from_db(&db);
+        let limiter = RateLimiter::new(loaded.rate_limit_kbps.saturating_mul(1024));
+        let max_c = loaded.max_concurrent.clamp(1, MAX_CONCURRENT_HARD_CAP);
 
         Ok(Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
@@ -72,10 +92,39 @@ impl TaskManager {
             db,
             ffmpeg,
             limiter,
-            concurrency_semaphore: Arc::new(Semaphore::new(max_concurrent_tasks)),
+            concurrency_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_HARD_CAP)),
+            active_tasks: Arc::new(AtomicUsize::new(0)),
+            max_concurrent: Arc::new(AtomicUsize::new(max_c)),
             progress_broadcast: tx,
             project_root,
+            settings: Arc::new(Mutex::new(loaded)),
         })
+    }
+
+    fn load_settings_from_db(db: &Database) -> AppSettings {
+        match db.get_setting(SETTINGS_KEY) {
+            Ok(Some(raw)) => serde_json::from_str(&raw).unwrap_or_default(),
+            _ => AppSettings::default(),
+        }
+    }
+
+    pub async fn get_settings(&self) -> AppSettings {
+        self.settings.lock().await.clone()
+    }
+
+    pub async fn update_settings(&self, next: AppSettings) -> Result<AppSettings> {
+        let mut next = next;
+        next.max_concurrent = next.max_concurrent.clamp(1, MAX_CONCURRENT_HARD_CAP);
+        // Rate limit: KB/s → bytes/s; 0 = unlimited
+        self.limiter.set_rate(next.rate_limit_kbps.saturating_mul(1024));
+        self.max_concurrent.store(next.max_concurrent, Ordering::Relaxed);
+
+        let json = serde_json::to_string(&next)?;
+        self.db.set_setting(SETTINGS_KEY, &json)?;
+
+        let mut guard = self.settings.lock().await;
+        *guard = next.clone();
+        Ok(next)
     }
 
     pub fn project_root(&self) -> &Path {
@@ -92,6 +141,23 @@ impl TaskManager {
 
     pub async fn check_sidecar(&self) -> bool {
         self.sidecar.ping().await.is_ok()
+    }
+
+    async fn acquire_concurrency_slot(
+        &self,
+    ) -> Result<(tokio::sync::OwnedSemaphorePermit, ActiveGuard)> {
+        loop {
+            let permit = Arc::clone(&self.concurrency_semaphore).acquire_owned().await?;
+            let active = self.active_tasks.load(Ordering::Relaxed);
+            let max = self.max_concurrent.load(Ordering::Relaxed).max(1);
+            if active < max {
+                self.active_tasks.fetch_add(1, Ordering::Relaxed);
+                let guard = ActiveGuard(Arc::clone(&self.active_tasks));
+                return Ok((permit, guard));
+            }
+            drop(permit);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     async fn prune_finished(&self) {
@@ -165,6 +231,28 @@ impl TaskManager {
             bail!("URL 不能为空");
         }
 
+        // Apply settings defaults for empty optional fields.
+        let mut req = req;
+        {
+            let settings = self.settings.lock().await;
+            if req.output_dir.as_deref().map(str::trim).unwrap_or("").is_empty()
+                && !settings.output_dir.trim().is_empty()
+            {
+                req.output_dir = Some(settings.output_dir.clone());
+            }
+            if req.proxy.as_deref().map(str::trim).unwrap_or("").is_empty()
+                && !settings.proxy.trim().is_empty()
+            {
+                req.proxy = Some(settings.proxy.clone());
+            }
+            if req.download_cover.is_none() {
+                req.download_cover = Some(settings.download_cover);
+            }
+            if req.download_subs.is_none() {
+                req.download_subs = Some(settings.download_subs);
+            }
+        }
+
         // Validate output dir early so the API returns a clear error.
         let out_dir = resolve_output_dir_checked(&req.output_dir, &self.project_root)?;
         tokio::fs::create_dir_all(&out_dir).await?;
@@ -225,6 +313,22 @@ impl TaskManager {
         Ok(task_id)
     }
 
+    /// Download a small side file (cover / image / subtitle) using a fresh client.
+    async fn download_side_file(
+        &self,
+        url: &str,
+        path: &Path,
+        req: &CreateTaskRequest,
+    ) -> Result<()> {
+        let headers = HashMap::from([(
+            "User-Agent".to_string(),
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36".to_string(),
+        )]);
+        let dl = ChunkedDownloader::new(req.proxy.as_deref(), Some(self.limiter.clone()))?;
+        let cancel = Arc::new(AtomicBool::new(false));
+        dl.download(url, path, &headers, 1, cancel, None).await
+    }
+
     async fn update_progress(
         &self,
         item: &TaskItem,
@@ -277,7 +381,7 @@ impl TaskManager {
         item: TaskItem,
         out_dir: PathBuf,
     ) -> Result<()> {
-        let _permit = self.concurrency_semaphore.acquire().await?;
+        let (_permit, _active_guard) = self.acquire_concurrency_slot().await?;
 
         if item.cancel_token.load(Ordering::Relaxed) {
             self.update_progress(&item, TaskStatus::Cancelled, 0, 0, 0, 0.0, None)
@@ -329,6 +433,100 @@ impl TaskManager {
         {
             let mut op = item.output_path.lock().await;
             *op = final_output.to_string_lossy().to_string();
+        }
+
+        // Optional cover image
+        if req.download_cover.unwrap_or(false) && !meta.cover_url.is_empty() {
+            let cover_path = out_dir.join(format!("{}.jpg", safe_title));
+            if let Err(e) = self.download_side_file(&meta.cover_url, &cover_path, &req).await {
+                warn!("Cover download failed: {:#}", e);
+            }
+        }
+
+        // Image post: download all images and finish (no video stream).
+        let image_urls: Vec<String> = meta
+            .extra
+            .get("image_urls")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let is_image_post = meta.content_type == "image_post" || (!image_urls.is_empty() && meta.streams.is_empty());
+        if is_image_post {
+            if !image_urls.is_empty() {
+                self.update_progress(&item, TaskStatus::Downloading, image_urls.len() as u64, 0, 0, 0.0, None)
+                    .await;
+                let img_dir = out_dir.join(format!("{}_images", safe_title));
+                tokio::fs::create_dir_all(&img_dir).await?;
+                let mut ok_count = 0u64;
+                for (i, url) in image_urls.iter().enumerate() {
+                    if item.cancel_token.load(Ordering::Relaxed) {
+                        self.update_progress(&item, TaskStatus::Cancelled, image_urls.len() as u64, ok_count, 0, 0.0, None)
+                            .await;
+                        return Ok(());
+                    }
+                    let ext = if url.contains(".png") { "png" } else { "jpg" };
+                    let path = img_dir.join(format!("{:03}.{}", i + 1, ext));
+                    match self.download_side_file(url, &path, &req).await {
+                        Ok(()) => ok_count += 1,
+                        Err(e) => warn!("Image {} failed: {:#}", i + 1, e),
+                    }
+                    let pct = (ok_count as f32 / image_urls.len() as f32) * 100.0;
+                    self.update_progress(&item, TaskStatus::Downloading, image_urls.len() as u64, ok_count, 0, pct, None)
+                        .await;
+                }
+                if ok_count == 0 {
+                    let err_str = "图文作品图片下载全部失败".to_string();
+                    self.update_progress(&item, TaskStatus::Failed, 0, 0, 0, 0.0, Some(err_str.clone()))
+                        .await;
+                    bail!(err_str);
+                }
+                let rec = DownloadRecord {
+                    id: None,
+                    url: req.url.clone(),
+                    status: "success".to_string(),
+                    reason: String::new(),
+                    title: meta.title.clone(),
+                    platform: meta.platform.clone(),
+                    author: meta.author.clone(),
+                    duration: meta.duration as i64,
+                    file_size: 0,
+                    file_format: "images".to_string(),
+                    output_path: img_dir.to_string_lossy().to_string(),
+                    timestamp: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                };
+                if let Err(e) = self.db.add_record(&rec) {
+                    warn!("Failed to persist image-post history: {:#}", e);
+                }
+                {
+                    let mut op = item.output_path.lock().await;
+                    *op = img_dir.to_string_lossy().to_string();
+                }
+                self.update_progress(&item, TaskStatus::Completed, ok_count, ok_count, 0, 100.0, None)
+                    .await;
+                info!("Image post task {} finished: {:?}", task_id, img_dir);
+                return Ok(());
+            }
+        }
+
+        // Optional subtitles from yt-dlp extra
+        if req.download_subs.unwrap_or(false) {
+            if let Some(subs) = meta.extra.get("subtitles").and_then(|v| v.as_array()) {
+                for sub in subs {
+                    let Some(url) = sub.get("url").and_then(|u| u.as_str()) else {
+                        continue;
+                    };
+                    let lang = sub.get("lang").and_then(|l| l.as_str()).unwrap_or("sub");
+                    let ext = sub.get("ext").and_then(|e| e.as_str()).unwrap_or("vtt");
+                    let path = out_dir.join(format!("{}.{}.{}", safe_title, lang, ext));
+                    if let Err(e) = self.download_side_file(url, &path, &req).await {
+                        warn!("Subtitle {} download failed: {:#}", lang, e);
+                    }
+                }
+            }
         }
 
         // 2. Choose Streams

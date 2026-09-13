@@ -32,7 +32,7 @@ pub struct ChunkedDownloader {
 impl ChunkedDownloader {
     pub fn new(proxy: Option<&str>, limiter: Option<RateLimiter>) -> Result<Self> {
         let mut builder = Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
+            .timeout(std::time::Duration::from_secs(120))
             .connect_timeout(std::time::Duration::from_secs(15));
 
         if let Some(p) = proxy {
@@ -100,21 +100,38 @@ impl ChunkedDownloader {
         let part_path = PathBuf::from(format!("{}.part", output_path.to_string_lossy()));
         let (total_size, accept_ranges) = self.probe(url, headers).await;
 
+        // Resume: if a .part file already exists, continue from its length (single-stream).
+        let existing = tokio::fs::metadata(&part_path).await.map(|m| m.len()).unwrap_or(0);
+        let resume_from = if existing > 0 && (total_size == 0 || existing < total_size) {
+            existing
+        } else if total_size > 0 && existing == total_size {
+            // Complete part from a previous run — just rename.
+            tokio::fs::rename(&part_path, output_path).await.ok();
+            if output_path.exists() {
+                info!("Resumed complete part file for {:?}", output_path);
+                return Ok(());
+            }
+            0
+        } else {
+            0
+        };
+
         info!(
-            "Download starting: {} (size: {} bytes, range: {})",
-            url, total_size, accept_ranges
+            "Download starting: {} (size: {} bytes, range: {}, resume_from: {})",
+            url, total_size, accept_ranges, resume_from
         );
 
-        let downloaded_bytes = Arc::new(AtomicU64::new(0));
+        let downloaded_bytes = Arc::new(AtomicU64::new(resume_from));
 
-        // Start background speed & progress reporter
-        let cancel_clone = Arc::clone(&cancel_token);
+        // Separate flag so completing one file does not poison the caller's cancel token.
+        let progress_stop = Arc::new(AtomicBool::new(false));
+        let progress_cancel = Arc::clone(&progress_stop);
         let downloaded_clone = Arc::clone(&downloaded_bytes);
         let progress_task = tokio::spawn(async move {
             let mut last_bytes = 0u64;
             let mut last_time = Instant::now();
 
-            while !cancel_clone.load(Ordering::Relaxed) {
+            while !progress_cancel.load(Ordering::Relaxed) {
                 tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                 let current_bytes = downloaded_clone.load(Ordering::Relaxed);
                 let elapsed = last_time.elapsed().as_secs_f64();
@@ -151,8 +168,12 @@ impl ChunkedDownloader {
             }
         });
 
-        // Determine download strategy
-        let result = if accept_ranges && total_size > MIN_PARALLEL_SIZE && concurrency > 1 {
+        // Parallel only when starting fresh (no resume) and file is large.
+        let result = if accept_ranges
+            && total_size > MIN_PARALLEL_SIZE
+            && concurrency > 1
+            && resume_from == 0
+        {
             self.download_parallel_range(
                 url,
                 &part_path,
@@ -168,22 +189,26 @@ impl ChunkedDownloader {
                 url,
                 &part_path,
                 headers,
+                resume_from,
                 Arc::clone(&downloaded_bytes),
                 Arc::clone(&cancel_token),
             )
             .await
         };
 
-        // Stop progress task
-        cancel_token.store(true, Ordering::Relaxed);
+        progress_stop.store(true, Ordering::Relaxed);
         let _ = progress_task.await;
 
         if let Err(e) = result {
-            let _ = tokio::fs::remove_file(&part_path).await;
+            // Keep .part for resume unless cancelled mid-write with no progress need.
+            // Only delete when file is empty/corrupt-sized zero.
+            let sz = tokio::fs::metadata(&part_path).await.map(|m| m.len()).unwrap_or(0);
+            if sz == 0 {
+                let _ = tokio::fs::remove_file(&part_path).await;
+            }
             return Err(e);
         }
 
-        // Rename .part to target path
         tokio::fs::rename(&part_path, output_path)
             .await
             .with_context(|| format!("Failed to rename {:?} to {:?}", part_path, output_path))?;
@@ -197,10 +222,15 @@ impl ChunkedDownloader {
         url: &str,
         part_path: &Path,
         headers: &HashMap<String, String>,
+        resume_from: u64,
         downloaded: Arc<AtomicU64>,
         cancel_token: Arc<AtomicBool>,
     ) -> Result<()> {
-        let req_headers = Self::build_headers(headers);
+        let mut req_headers = Self::build_headers(headers);
+        if resume_from > 0 {
+            req_headers.insert(RANGE, HeaderValue::from_str(&format!("bytes={}-", resume_from))?);
+        }
+
         let resp = self
             .client
             .get(url)
@@ -209,11 +239,20 @@ impl ChunkedDownloader {
             .await?
             .error_for_status()?;
 
-        let mut file = File::create(part_path).await?;
+        let mut file = if resume_from > 0 {
+            OpenOptions::new().write(true).create(true).open(part_path).await?
+        } else {
+            File::create(part_path).await?
+        };
+        if resume_from > 0 {
+            file.seek(SeekFrom::End(0)).await?;
+        }
+
         let mut stream = resp.bytes_stream();
 
         while let Some(chunk_res) = stream.next().await {
             if cancel_token.load(Ordering::Relaxed) {
+                file.flush().await.ok();
                 bail!("Download cancelled by user");
             }
 
@@ -240,7 +279,6 @@ impl ChunkedDownloader {
         downloaded: Arc<AtomicU64>,
         cancel_token: Arc<AtomicBool>,
     ) -> Result<()> {
-        // Pre-allocate file size
         {
             let file = File::create(part_path).await?;
             file.set_len(total_size).await?;

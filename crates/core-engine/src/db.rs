@@ -210,4 +210,21 @@ impl Database {
         )?;
         Ok(())
     }
+
+    pub fn get_all_settings(&self) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT key, value FROM settings ORDER BY key")?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    pub fn delete_setting(&self, key: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
+        Ok(())
+    }
 }

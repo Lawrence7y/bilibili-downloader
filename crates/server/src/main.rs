@@ -13,7 +13,7 @@ use axum::{
 };
 use core_engine::{
     db::Database,
-    models::{DownloadRecord, MediaMetadata, TaskProgress},
+    models::{AppSettings, DownloadRecord, MediaMetadata, TaskProgress},
     sidecar::SidecarClient,
     task_manager::{CreateTaskRequest, TaskManager},
 };
@@ -91,6 +91,7 @@ async fn main() -> Result<()> {
 
     let api_router = Router::new()
         .route("/health", get(health_check))
+        .route("/settings", get(get_settings).put(update_settings))
         .route("/resolve", post(resolve_url))
         .route("/resolve/douyin/batch", post(resolve_douyin_batch))
         .route("/cookie/check", post(check_cookie))
@@ -132,6 +133,20 @@ async fn health_check(State(state): State<AppState>) -> Json<serde_json::Value> 
         "ffmpeg": ffmpeg_ok,
         "project_root": state.project_root.display().to_string(),
     }))
+}
+
+async fn get_settings(State(state): State<AppState>) -> Json<AppSettings> {
+    Json(state.task_manager.get_settings().await)
+}
+
+async fn update_settings(
+    State(state): State<AppState>,
+    Json(payload): Json<AppSettings>,
+) -> Result<Json<AppSettings>, (StatusCode, String)> {
+    match state.task_manager.update_settings(payload).await {
+        Ok(s) => Ok(Json(s)),
+        Err(err) => Err((StatusCode::BAD_REQUEST, err.to_string())),
+    }
 }
 
 #[derive(Deserialize)]

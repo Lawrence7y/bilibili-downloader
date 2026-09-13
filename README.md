@@ -61,11 +61,13 @@ cd frontend; npm install; npm run build; cd ..
 | Method | Path | 说明 |
 |---|---|---|
 | GET | `/api/health` | sidecar / ffmpeg 健康检查 |
+| GET/PUT | `/api/settings` | 下载偏好（输出目录/限速/并发/代理/封面/字幕） |
 | POST | `/api/resolve` | 解析单链接 |
 | POST | `/api/resolve/douyin/batch` | 抖音主页/合集批量 |
 | POST | `/api/cookie/check` | Cookie 诊断 |
 | GET/POST | `/api/tasks` | 任务列表 / 创建 |
 | POST | `/api/tasks/:id/cancel` | 取消任务 |
+| POST | `/api/tasks/:id/retry` | 重试失败/取消任务 |
 | GET | `/api/history` | 历史记录 |
 | GET | `/api/history/search?q=` | FTS 搜索 |
 | WS | `/api/ws` | 进度推送 |
@@ -75,9 +77,17 @@ cd frontend; npm install; npm run build; cd ..
 ```powershell
 cargo test -p core-engine
 cargo test -p server
+python scripts/smoke_api.py   # 需先启动 server
 ```
 
 集成测试会真实拉起 Python sidecar（需要 venv 存在）。
+
+## Release 打包
+
+```powershell
+.\build_release.bat
+# 产物在 dist\BillBillDL\
+```
 
 ## 目录说明
 
@@ -86,7 +96,7 @@ cargo test -p server
 | `crates/` | Rust workspace（server + core-engine） |
 | `frontend/` | Vue3 + Vite + Tailwind |
 | `sidecar/` | Python JSON-RPC sidecar |
-| `bilibili-downloader/` | 旧版 Python GUI（遗留）+ 项目共用 venv |
+| `bilibili-downloader/` | 旧版 Python GUI（**独立 git 仓库**，本仓库已 ignore）+ 项目共用 venv |
 | `downloads/` | 默认下载目录与 SQLite 历史（gitignored） |
 
 ## 遗留说明

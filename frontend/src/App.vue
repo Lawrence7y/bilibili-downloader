@@ -74,6 +74,16 @@
 
       <!-- 2. 主内容区域 Main Content -->
       <main class="flex-1 flex flex-col h-full overflow-hidden bg-slate-50 dark:bg-slate-950">
+        <!-- WS 断线横幅 -->
+        <div
+          v-if="wsStatus !== 'open'"
+          class="px-4 py-2 text-xs font-medium bg-amber-50 text-amber-800 border-b border-amber-200 dark:bg-amber-950/40 dark:text-amber-200 dark:border-amber-900 flex items-center justify-between"
+        >
+          <span>
+            {{ wsStatus === 'connecting' ? '正在连接实时进度…' : '实时进度连接已断开，正在重连…' }}
+          </span>
+          <button @click="initWebSocket" class="underline">立即重连</button>
+        </div>
         
         <!-- 页面一：单/多链接解析与下载中心 -->
         <section v-if="currentTab === 'home'" class="flex-1 overflow-y-auto p-8 max-w-5xl mx-auto w-full space-y-6">
@@ -477,9 +487,85 @@
               </div>
             </div>
           </div>
+
+          <!-- 下载偏好设置 -->
+          <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
+            <h3 class="font-bold text-sm text-slate-900 dark:text-white">下载偏好（保存到本机数据库）</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label class="block text-xs font-medium text-slate-500 mb-1">默认输出目录（相对项目根）</label>
+                <input
+                  v-model="appSettings.output_dir"
+                  type="text"
+                  placeholder="downloads"
+                  class="w-full rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-500 mb-1">默认代理（可选，如 socks5://127.0.0.1:7890）</label>
+                <input
+                  v-model="appSettings.proxy"
+                  type="text"
+                  placeholder="留空则不使用代理"
+                  class="w-full rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-500 mb-1">限速（KB/s，0 = 不限）</label>
+                <input
+                  v-model.number="appSettings.rate_limit_kbps"
+                  type="number"
+                  min="0"
+                  class="w-full rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-500 mb-1">最大并发任务数（1-32）</label>
+                <input
+                  v-model.number="appSettings.max_concurrent"
+                  type="number"
+                  min="1"
+                  max="32"
+                  class="w-full rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+              <label class="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+                <input type="checkbox" v-model="appSettings.download_cover" class="rounded text-indigo-600" />
+                同时下载封面图
+              </label>
+              <label class="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+                <input type="checkbox" v-model="appSettings.download_subs" class="rounded text-indigo-600" />
+                同时下载字幕（如有）
+              </label>
+            </div>
+            <div class="flex justify-end">
+              <button
+                @click="saveAppSettings"
+                class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold transition"
+              >
+                保存设置
+              </button>
+            </div>
+          </div>
         </section>
 
       </main>
+    </div>
+
+    <!-- Toast 通知 -->
+    <div class="fixed top-4 right-4 z-50 space-y-2 pointer-events-none">
+      <div
+        v-for="t in toasts"
+        :key="t.id"
+        :class="[
+          'pointer-events-auto max-w-sm px-4 py-3 rounded-xl shadow-lg text-xs font-medium border backdrop-blur',
+          t.type === 'error' ? 'bg-red-50/95 border-red-200 text-red-800 dark:bg-red-950/90 dark:text-red-200 dark:border-red-800' :
+          t.type === 'success' ? 'bg-emerald-50/95 border-emerald-200 text-emerald-800 dark:bg-emerald-950/90 dark:text-emerald-200 dark:border-emerald-800' :
+          'bg-slate-50/95 border-slate-200 text-slate-800 dark:bg-slate-800/95 dark:text-slate-100 dark:border-slate-700'
+        ]"
+      >
+        {{ t.message }}
+      </div>
     </div>
   </div>
 </template>
@@ -504,8 +590,55 @@ const isDark = ref(false)
 
 // 引擎健康状态：unknown | ok | degraded
 const engineStatus = ref('unknown')
+const wsStatus = ref('connecting') // connecting | open | closed
+
+// Toast
+const toasts = ref([])
+let toastSeq = 0
+const toast = (message, type = 'info') => {
+  const id = ++toastSeq
+  toasts.value.push({ id, message, type })
+  setTimeout(() => {
+    toasts.value = toasts.value.filter(t => t.id !== id)
+  }, 4000)
+}
 
 const COOKIE_STORAGE_KEY = 'ddl.cookie'
+
+// App settings (server-persisted)
+const defaultSettings = {
+  output_dir: 'downloads',
+  rate_limit_kbps: 0,
+  max_concurrent: 5,
+  proxy: '',
+  download_cover: false,
+  download_subs: false,
+}
+const appSettings = ref({ ...defaultSettings })
+
+const loadAppSettings = async () => {
+  try {
+    const res = await fetch('/api/settings')
+    if (res.ok) {
+      appSettings.value = { ...defaultSettings, ...(await res.json()) }
+    }
+  } catch (e) {}
+}
+
+const saveAppSettings = async () => {
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(appSettings.value),
+    })
+    if (!res.ok) throw new Error(await res.text())
+    appSettings.value = await res.json()
+    toast('设置已保存', 'success')
+  } catch (err) {
+    toast('保存设置失败: ' + err.message, 'error')
+  }
+}
 
 // 导航菜单定义
 const currentTab = ref('home')
@@ -579,7 +712,7 @@ const handleResolveUrl = async () => {
         currentTab.value = 'settings'
       }
     } else {
-      alert('解析失败: ' + msg)
+      toast('解析失败: ' + msg, 'error')
     }
   } finally {
     isResolving.value = false
@@ -600,10 +733,11 @@ const enqueueSingleTask = async () => {
       }),
     })
     if (!res.ok) throw new Error(await res.text())
+    toast('任务已创建', 'success')
     currentTab.value = 'tasks'
     loadTasks()
   } catch (err) {
-    alert('创建任务失败: ' + err.message)
+    toast('创建任务失败: ' + err.message, 'error')
   }
 }
 
@@ -678,7 +812,9 @@ const enqueueSelectedBatch = async () => {
   }
 
   if (failed > 0) {
-    alert(`已提交 ${selected.length - failed} 个任务，${failed} 个创建失败`)
+    toast(`已提交 ${selected.length - failed} 个任务，${failed} 个创建失败`, 'error')
+  } else {
+    toast(`已提交 ${selected.length} 个批量任务`, 'success')
   }
   currentTab.value = 'tasks'
   loadTasks()
@@ -706,31 +842,54 @@ const retryTask = async (taskId) => {
   try {
     const res = await fetch(`/api/tasks/${taskId}/retry`, { method: 'POST' })
     if (!res.ok) throw new Error(await res.text())
+    toast('已重新入队', 'success')
     loadTasks()
   } catch (err) {
-    alert('重试失败: ' + err.message)
+    toast('重试失败: ' + err.message, 'error')
   }
 }
 
 const initWebSocket = () => {
+  wsStatus.value = 'connecting'
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const wsUrl = `${protocol}//${window.location.host}/api/ws`
-  const ws = new WebSocket(wsUrl)
+  let ws
+  try {
+    ws = new WebSocket(wsUrl)
+  } catch {
+    wsStatus.value = 'closed'
+    setTimeout(initWebSocket, 3000)
+    return
+  }
+
+  ws.onopen = () => {
+    wsStatus.value = 'open'
+  }
 
   ws.onmessage = (event) => {
     try {
       const prog = JSON.parse(event.data)
       const idx = tasks.value.findIndex(t => t.task_id === prog.task_id)
       if (idx !== -1) {
-        tasks.value[idx] = prog
+        const prev = tasks.value[idx]
+        tasks.value[idx] = { ...prev, ...prog }
       } else {
         tasks.value.unshift(prog)
+      }
+      if (prog.status === 'completed') {
+        toast(`下载完成：${prog.title || prog.task_id}`, 'success')
+      } else if (prog.status === 'failed') {
+        toast(`任务失败：${prog.error_msg || prog.title || prog.task_id}`, 'error')
       }
     } catch (e) {}
   }
 
   ws.onclose = () => {
+    wsStatus.value = 'closed'
     setTimeout(initWebSocket, 3000)
+  }
+  ws.onerror = () => {
+    wsStatus.value = 'closed'
   }
 }
 
@@ -784,12 +943,12 @@ const saveCookieLocal = () => {
     if (cookieInput.value.trim()) {
       localStorage.setItem(COOKIE_STORAGE_KEY, cookieInput.value)
       localStorage.setItem(COOKIE_STORAGE_KEY + '.platform', cookiePlatform.value)
-      alert('Cookie 已保存到本机浏览器')
+      toast('Cookie 已保存到本机浏览器', 'success')
     } else {
       clearCookieLocal()
     }
   } catch (e) {
-    alert('保存失败: ' + e.message)
+    toast('保存失败: ' + e.message, 'error')
   }
 }
 
@@ -858,6 +1017,7 @@ const getStatusDotClass = (status) => {
 
 onMounted(() => {
   loadCookieLocal()
+  loadAppSettings()
   checkEngineHealth()
   loadTasks()
   loadHistory()

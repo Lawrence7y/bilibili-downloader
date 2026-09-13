@@ -130,3 +130,43 @@ pub struct DownloadRecord {
     pub output_path: String,
     pub timestamp: String,
 }
+
+/// User-facing app settings, persisted in SQLite `settings` table as JSON values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppSettings {
+    /// Default output directory (relative to project root or absolute under root).
+    #[serde(default)]
+    pub output_dir: String,
+    /// Download rate limit in KB/s. 0 = unlimited.
+    #[serde(default)]
+    pub rate_limit_kbps: u64,
+    /// Max concurrent download tasks.
+    #[serde(default = "default_concurrent")]
+    pub max_concurrent: usize,
+    /// Default HTTP/SOCKS proxy for resolve+download.
+    #[serde(default)]
+    pub proxy: String,
+    /// Also save cover image next to video.
+    #[serde(default)]
+    pub download_cover: bool,
+    /// Also save subtitles when available.
+    #[serde(default)]
+    pub download_subs: bool,
+}
+
+fn default_concurrent() -> usize {
+    5
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            output_dir: "downloads".to_string(),
+            rate_limit_kbps: 0,
+            max_concurrent: 5,
+            proxy: String::new(),
+            download_cover: false,
+            download_subs: false,
+        }
+    }
+}
