@@ -85,195 +85,227 @@
           <button @click="initWebSocket" class="underline">立即重连</button>
         </div>
         
-        <!-- 页面一：单/多链接解析与下载中心 -->
+        <!-- 页面一：下载中心（单链接 + 抖音批量） -->
         <section v-if="currentTab === 'home'" class="flex-1 overflow-y-auto p-8 max-w-5xl mx-auto w-full space-y-6">
           <div class="space-y-1">
             <h2 class="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">下载中心</h2>
-            <p class="text-sm text-slate-500 dark:text-slate-400">支持抖音、Bilibili、YouTube、快手等全网多平台音视频提取与 Range 极速分块下载</p>
+            <p class="text-sm text-slate-500 dark:text-slate-400">支持抖音、Bilibili、YouTube 等；抖音主页/合集可批量抓取</p>
           </div>
 
-          <!-- 解析输入卡片 -->
-          <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm space-y-4">
-            <div class="relative">
+          <!-- 模式切换 -->
+          <div class="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1">
+            <button
+              v-for="m in homeModes"
+              :key="m.id"
+              @click="homeMode = m.id"
+              :class="[
+                'px-4 py-2 rounded-lg text-xs font-semibold transition',
+                homeMode === m.id
+                  ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+              ]"
+            >
+              {{ m.label }}
+            </button>
+          </div>
+
+          <!-- 输出目录（两种模式共用） -->
+          <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-sm">
+            <div class="flex flex-col md:flex-row md:items-center gap-3">
+              <label class="text-xs font-medium text-slate-500 md:w-24 flex-shrink-0">保存到</label>
+              <input
+                v-model="homeOutputDir"
+                type="text"
+                placeholder="downloads 或 D:\Videos\dl"
+                class="flex-1 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+              <button
+                @click="persistHomeOutputDir"
+                class="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 transition"
+              >
+                保存目录
+              </button>
+            </div>
+            <p class="mt-2 text-[11px] text-slate-400">相对路径基于项目根目录；也可填绝对路径如 D:\Videos</p>
+          </div>
+
+          <!-- 模式 A：单/多链接解析 -->
+          <template v-if="homeMode === 'single'">
+            <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm space-y-4">
               <textarea
                 v-model="inputUrl"
                 rows="3"
-                placeholder="粘贴视频分享链接（支持抖音口令链接、B站 BV/av 号、YouTube 链接等，可批量粘贴多行）..."
+                placeholder="粘贴视频分享链接（抖音口令/主页带 modal_id、B站 BV 号、YouTube 等，可多行批量）..."
                 class="w-full rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-3.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500 transition"
               ></textarea>
-            </div>
 
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-4 text-xs text-slate-500">
-                <label class="flex items-center gap-1.5 cursor-pointer">
+              <div class="flex items-center justify-between">
+                <label class="flex items-center gap-1.5 cursor-pointer text-xs text-slate-500">
                   <input type="checkbox" v-model="audioOnlyOption" class="rounded text-indigo-600 focus:ring-indigo-500" />
                   <span>仅提取音频 (MP3)</span>
                 </label>
-              </div>
-
-              <div class="flex items-center gap-3">
-                <button
-                  @click="clearHomeInput"
-                  class="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
-                >
-                  清空
-                </button>
-                <button
-                  @click="handleResolveUrl"
-                  :disabled="isResolving || !inputUrl.trim()"
-                  class="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-md shadow-indigo-500/20 disabled:opacity-50 transition"
-                >
-                  <Loader2 v-if="isResolving" class="w-4 h-4 animate-spin" />
-                  <Sparkles v-else class="w-4 h-4" />
-                  <span>{{ isResolving ? '解析探测中...' : '开始解析' }}</span>
-                </button>
+                <div class="flex items-center gap-3">
+                  <button
+                    @click="clearHomeInput"
+                    class="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                  >
+                    清空
+                  </button>
+                  <button
+                    @click="handleResolveUrl"
+                    :disabled="isResolving || !inputUrl.trim()"
+                    class="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-md shadow-indigo-500/20 disabled:opacity-50 transition"
+                  >
+                    <Loader2 v-if="isResolving" class="w-4 h-4 animate-spin" />
+                    <Sparkles v-else class="w-4 h-4" />
+                    <span>{{ isResolving ? '解析探测中...' : '开始解析' }}</span>
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
 
-          <!-- 预下载预览结果卡片 -->
-          <div v-if="resolvedMeta" class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm space-y-4">
-            <div class="flex gap-5 items-start">
-              <div class="w-44 h-28 flex-shrink-0 bg-slate-100 dark:bg-slate-800 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 relative">
-                <img v-if="resolvedMeta.cover_url" :src="resolvedMeta.cover_url" class="w-full h-full object-cover" />
-                <div v-else class="w-full h-full flex items-center justify-center text-slate-400 text-xs">无封面</div>
-                <span class="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/70 text-[10px] text-white font-mono">
-                  {{ formatDuration(resolvedMeta.duration) }}
-                </span>
-              </div>
-
-              <div class="flex-1 min-w-0 space-y-2">
-                <div class="flex items-center gap-2">
-                  <span class="px-2 py-0.5 text-[10px] rounded-md font-bold uppercase tracking-wider bg-indigo-100 text-indigo-700 dark:bg-indigo-950/70 dark:text-indigo-400">
-                    {{ resolvedMeta.platform }}
+            <!-- 预下载预览结果卡片 -->
+            <div v-if="resolvedMeta" class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm space-y-4">
+              <div class="flex gap-5 items-start">
+                <div class="w-44 h-28 flex-shrink-0 bg-slate-100 dark:bg-slate-800 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 relative">
+                  <img v-if="resolvedMeta.cover_url" :src="resolvedMeta.cover_url" class="w-full h-full object-cover" />
+                  <div v-else class="w-full h-full flex items-center justify-center text-slate-400 text-xs">无封面</div>
+                  <span class="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/70 text-[10px] text-white font-mono">
+                    {{ formatDuration(resolvedMeta.duration) }}
                   </span>
-                  <span class="text-xs text-slate-500 dark:text-slate-400">作者：{{ resolvedMeta.author || '未知' }}</span>
                 </div>
-                <h3 class="font-bold text-base text-slate-900 dark:text-white line-clamp-2">{{ resolvedMeta.title }}</h3>
-                <p class="text-xs text-slate-400 truncate">{{ resolvedMeta.url }}</p>
-
-                <!-- 流信息或格式选择 -->
-                <div class="flex flex-col gap-2 pt-2">
-                  <div class="flex items-center gap-3 flex-wrap">
-                    <span class="text-xs text-slate-500">检测到 {{ resolvedMeta.streams?.length || 0 }} 个可用格式流</span>
-                    <select
-                      v-if="streamOptions.length > 0"
-                      v-model="selectedFormatId"
-                      class="rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    >
-                      <option v-for="opt in streamOptions" :key="opt.format_id" :value="opt.format_id">
-                        {{ opt.label }}
-                      </option>
-                    </select>
-                    <button
-                      @click="enqueueSingleTask"
-                      class="ml-auto flex items-center gap-2 px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-md shadow-emerald-500/20 transition"
-                    >
-                      <Download class="w-3.5 h-3.5" />
-                      <span>立即下载</span>
-                    </button>
+                <div class="flex-1 min-w-0 space-y-2">
+                  <div class="flex items-center gap-2">
+                    <span class="px-2 py-0.5 text-[10px] rounded-md font-bold uppercase tracking-wider bg-indigo-100 text-indigo-700 dark:bg-indigo-950/70 dark:text-indigo-400">
+                      {{ resolvedMeta.platform }}
+                    </span>
+                    <span class="text-xs text-slate-500 dark:text-slate-400">作者：{{ resolvedMeta.author || '未知' }}</span>
+                  </div>
+                  <h3 class="font-bold text-base text-slate-900 dark:text-white line-clamp-2">{{ resolvedMeta.title }}</h3>
+                  <p class="text-xs text-slate-400 truncate">{{ resolvedMeta.url }}</p>
+                  <div class="flex flex-col gap-2 pt-2">
+                    <div class="flex items-center gap-3 flex-wrap">
+                      <span class="text-xs text-slate-500">检测到 {{ resolvedMeta.streams?.length || 0 }} 个可用格式流</span>
+                      <select
+                        v-if="streamOptions.length > 0"
+                        v-model="selectedFormatId"
+                        class="rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      >
+                        <option v-for="opt in streamOptions" :key="opt.format_id" :value="opt.format_id">
+                          {{ opt.label }}
+                        </option>
+                      </select>
+                      <button
+                        @click="enqueueSingleTask"
+                        class="ml-auto flex items-center gap-2 px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-md shadow-emerald-500/20 transition"
+                      >
+                        <Download class="w-3.5 h-3.5" />
+                        <span>立即下载</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
-          </div>
-        </section>
+          </template>
 
-        <!-- 页面二：抖音深度批量专区 -->
-        <section v-if="currentTab === 'douyin'" class="flex-1 overflow-y-auto p-8 max-w-5xl mx-auto w-full space-y-6">
-          <div class="space-y-1">
-            <h2 class="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">抖音批量专区</h2>
-            <p class="text-sm text-slate-500 dark:text-slate-400">支持博主主页作品列表、合集 (Mix)、喜欢列表及收藏列表的一键抓取与批量拉取</p>
-          </div>
-
-          <!-- 批量查询面板 -->
-          <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm space-y-4">
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
-              <div class="md:col-span-1">
-                <label class="block text-xs font-medium text-slate-500 mb-1">批量类型</label>
-                <select
-                  v-model="douyinBatchType"
-                  class="w-full rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-2.5 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                >
-                  <option value="posts">主页发布作品 (Posts)</option>
-                  <option value="mix">合集视频 (Collection/Mix)</option>
-                  <option value="likes">喜欢列表 (Likes)</option>
-                  <option value="collects">收藏列表 (Collects)</option>
-                </select>
+          <!-- 模式 B：抖音批量 -->
+          <template v-else>
+            <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm space-y-4">
+              <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <div class="md:col-span-1">
+                  <label class="block text-xs font-medium text-slate-500 mb-1">批量类型</label>
+                  <select
+                    v-model="douyinBatchType"
+                    class="w-full rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-2.5 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    <option value="posts">主页发布作品</option>
+                    <option value="mix">合集视频</option>
+                  </select>
+                </div>
+                <div class="md:col-span-2">
+                  <label class="block text-xs font-medium text-slate-500 mb-1">主页/合集链接或 ID</label>
+                  <input
+                    v-model="douyinTargetId"
+                    type="text"
+                    placeholder="https://www.douyin.com/user/MS4wLj... 或 sec_user_id"
+                    class="w-full rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+                <div class="md:col-span-1">
+                  <label class="block text-xs font-medium text-slate-500 mb-1">最多条数</label>
+                  <input
+                    v-model.number="douyinMaxCount"
+                    type="number"
+                    min="1"
+                    max="100"
+                    class="w-full rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
               </div>
-
-              <div class="md:col-span-2">
-                <label class="block text-xs font-medium text-slate-500 mb-1">用户主页链接或 sec_user_id / mix_id</label>
-                <input
-                  v-model="douyinTargetId"
-                  type="text"
-                  placeholder="如 https://www.douyin.com/user/MS4wLj... 或 ID"
-                  class="w-full rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-
-              <div class="md:col-span-1 flex items-end">
+              <div class="flex items-center justify-between">
+                <p class="text-[11px] text-slate-400">
+                  {{ isBatchResolving ? '正在抓取列表，请稍候（无 Cookie 时可能失败或很慢）...' : '建议先在系统设置保存抖音 Cookie，否则批量易失败' }}
+                </p>
                 <button
                   @click="handleResolveDouyinBatch"
                   :disabled="isBatchResolving || !douyinTargetId.trim()"
-                  class="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-md shadow-indigo-500/20 disabled:opacity-50 transition"
+                  class="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-md shadow-indigo-500/20 disabled:opacity-50 transition"
                 >
                   <Loader2 v-if="isBatchResolving" class="w-3.5 h-3.5 animate-spin" />
                   <FolderDown v-else class="w-3.5 h-3.5" />
-                  <span>抓取列表</span>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- 批量列表网格 -->
-          <div v-if="batchItems.length > 0" class="space-y-3">
-            <div class="flex items-center justify-between px-1">
-              <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                已获取到 {{ batchItems.length }} 个作品
-              </span>
-              <div class="flex items-center gap-3">
-                <button @click="toggleSelectAllBatch" class="text-xs text-indigo-600 hover:underline">
-                  {{ isAllBatchSelected ? '取消全选' : '全选全部' }}
-                </button>
-                <button
-                  @click="enqueueSelectedBatch"
-                  :disabled="selectedBatchCount === 0"
-                  class="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold disabled:opacity-50 transition"
-                >
-                  下载选中项 ({{ selectedBatchCount }})
+                  <span>{{ isBatchResolving ? '抓取中…' : '抓取列表' }}</span>
                 </button>
               </div>
             </div>
 
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              <div
-                v-for="item in batchItems"
-                :key="item.item_id"
-                @click="item.selected = !item.selected"
-                :class="[
-                  'cursor-pointer rounded-xl border p-3 flex gap-3 transition-all',
-                  item.selected
-                    ? 'border-indigo-500 bg-indigo-50/40 dark:bg-indigo-950/20'
-                    : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-slate-300'
-                ]"
-              >
-                <div class="w-16 h-20 bg-slate-100 dark:bg-slate-800 rounded-lg overflow-hidden flex-shrink-0 relative">
-                  <img v-if="item.cover_url" :src="item.cover_url" class="w-full h-full object-cover" />
-                  <span class="absolute bottom-1 right-1 text-[9px] bg-black/70 text-white px-1 rounded font-mono">
-                    {{ formatDuration(item.duration) }}
-                  </span>
+            <div v-if="batchItems.length > 0" class="space-y-3">
+              <div class="flex items-center justify-between px-1">
+                <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  已获取到 {{ batchItems.length }} 个作品
+                </span>
+                <div class="flex items-center gap-3">
+                  <button @click="toggleSelectAllBatch" class="text-xs text-indigo-600 hover:underline">
+                    {{ isAllBatchSelected ? '取消全选' : '全选全部' }}
+                  </button>
+                  <button
+                    @click="enqueueSelectedBatch"
+                    :disabled="selectedBatchCount === 0"
+                    class="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold disabled:opacity-50 transition"
+                  >
+                    下载选中项 ({{ selectedBatchCount }})
+                  </button>
                 </div>
-                <div class="flex-1 min-w-0 flex flex-col justify-between">
-                  <h4 class="text-xs font-medium line-clamp-2 text-slate-800 dark:text-slate-200">{{ item.title }}</h4>
-                  <div class="flex items-center justify-between text-[11px] text-slate-400">
-                    <span>{{ item.author }}</span>
-                    <input type="checkbox" v-model="item.selected" @click.stop class="rounded text-indigo-600" />
+              </div>
+              <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <div
+                  v-for="item in batchItems"
+                  :key="item.item_id"
+                  @click="item.selected = !item.selected"
+                  :class="[
+                    'cursor-pointer rounded-xl border p-3 flex gap-3 transition-all',
+                    item.selected
+                      ? 'border-indigo-500 bg-indigo-50/40 dark:bg-indigo-950/20'
+                      : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-slate-300'
+                  ]"
+                >
+                  <div class="w-16 h-20 bg-slate-100 dark:bg-slate-800 rounded-lg overflow-hidden flex-shrink-0 relative">
+                    <img v-if="item.cover_url" :src="item.cover_url" class="w-full h-full object-cover" />
+                    <span class="absolute bottom-1 right-1 text-[9px] bg-black/70 text-white px-1 rounded font-mono">
+                      {{ formatDuration(item.duration) }}
+                    </span>
+                  </div>
+                  <div class="flex-1 min-w-0 flex flex-col justify-between">
+                    <h4 class="text-xs font-medium line-clamp-2 text-slate-800 dark:text-slate-200">{{ item.title }}</h4>
+                    <div class="flex items-center justify-between text-[11px] text-slate-400">
+                      <span>{{ item.author }}</span>
+                      <input type="checkbox" v-model="item.selected" @click.stop class="rounded text-indigo-600" />
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
-          </div>
+          </template>
         </section>
 
         <!-- 页面三：实时任务看板 Tasks -->
@@ -493,11 +525,11 @@
             <h3 class="font-bold text-sm text-slate-900 dark:text-white">下载偏好（保存到本机数据库）</h3>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label class="block text-xs font-medium text-slate-500 mb-1">默认输出目录（相对项目根）</label>
+                <label class="block text-xs font-medium text-slate-500 mb-1">默认输出目录（相对项目根或绝对路径）</label>
                 <input
                   v-model="appSettings.output_dir"
                   type="text"
-                  placeholder="downloads"
+                  placeholder="downloads 或 D:\Videos"
                   class="w-full rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
@@ -571,7 +603,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import {
   Download,
   FolderDown,
@@ -621,6 +653,7 @@ const loadAppSettings = async () => {
     const res = await fetch('/api/settings')
     if (res.ok) {
       appSettings.value = { ...defaultSettings, ...(await res.json()) }
+      homeOutputDir.value = appSettings.value.output_dir || 'downloads'
     }
   } catch (e) {}
 }
@@ -644,11 +677,19 @@ const saveAppSettings = async () => {
 const currentTab = ref('home')
 const navItems = [
   { id: 'home', label: '下载中心', icon: Download },
-  { id: 'douyin', label: '抖音批量', icon: FolderDown },
   { id: 'tasks', label: '进行任务', icon: Inbox },
   { id: 'history', label: '历史归档', icon: History },
   { id: 'settings', label: '系统设置', icon: Settings },
 ]
+
+// 下载中心内部模式
+const homeMode = ref('single')
+const homeModes = [
+  { id: 'single', label: '单链接解析' },
+  { id: 'batch', label: '抖音批量' },
+]
+const homeOutputDir = ref('downloads')
+const douyinMaxCount = ref(20)
 
 // 1. 下载中心状态
 const inputUrl = ref('')
@@ -730,6 +771,7 @@ const enqueueSingleTask = async () => {
         extract_audio: audioOnlyOption.value ? 'mp3' : null,
         cookie: cookieInput.value || null,
         format_id: selectedFormatId.value || null,
+        output_dir: homeOutputDir.value || null,
       }),
     })
     if (!res.ok) throw new Error(await res.text())
@@ -741,6 +783,23 @@ const enqueueSingleTask = async () => {
   }
 }
 
+const persistHomeOutputDir = async () => {
+  try {
+    const next = { ...appSettings.value, output_dir: homeOutputDir.value || 'downloads' }
+    const res = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(next),
+    })
+    if (!res.ok) throw new Error(await res.text())
+    appSettings.value = await res.json()
+    homeOutputDir.value = appSettings.value.output_dir
+    toast('下载目录已保存', 'success')
+  } catch (err) {
+    toast('保存目录失败: ' + err.message, 'error')
+  }
+}
+
 // 2. 抖音批量状态
 const douyinBatchType = ref('posts')
 const douyinTargetId = ref('')
@@ -748,13 +807,30 @@ const isBatchResolving = ref(false)
 const batchItems = ref([])
 
 const handleResolveDouyinBatch = async () => {
-  if (!douyinTargetId.value.trim()) return
+  if (!douyinTargetId.value.trim()) {
+    toast('请先填写主页链接或 ID', 'error')
+    return
+  }
   isBatchResolving.value = true
   batchItems.value = []
 
   let cleanId = douyinTargetId.value.trim()
-  const m = cleanId.match(/user\/([a-zA-Z0-9_-]+)/)
-  if (m) cleanId = m[1]
+  // Extract from various URL shapes
+  const userMatch = cleanId.match(/user\/([a-zA-Z0-9_-]+)/)
+  if (userMatch) {
+    cleanId = userMatch[1]
+    if (douyinBatchType.value === 'mix') {
+      // keep as-is unless mix_id present
+    }
+  }
+  const mixMatch = cleanId.match(/collection\/(\d+)/) || cleanId.match(/mix_id=(\d+)/)
+  if (mixMatch) {
+    cleanId = mixMatch[1]
+    douyinBatchType.value = 'mix'
+  }
+
+  const maxCount = Math.max(1, Math.min(100, Number(douyinMaxCount.value) || 20))
+  toast(`正在抓取最多 ${maxCount} 条，请稍候…`, 'info')
 
   try {
     const res = await fetch('/api/resolve/douyin/batch', {
@@ -763,15 +839,22 @@ const handleResolveDouyinBatch = async () => {
       body: JSON.stringify({
         batch_type: douyinBatchType.value,
         target_id: cleanId,
-        max_count: 50,
+        max_count: maxCount,
         cookie: cookieInput.value || null,
+        proxy: appSettings.value.proxy || null,
       }),
     })
     if (!res.ok) throw new Error(await res.text())
     const data = await res.json()
-    batchItems.value = (data.sub_items || []).map(item => ({ ...item, selected: true }))
+    const items = (data.sub_items || []).map(item => ({ ...item, selected: true }))
+    batchItems.value = items
+    if (items.length === 0) {
+      toast('未抓到作品：可能需要登录 Cookie，或该主页无公开作品', 'error')
+    } else {
+      toast(`抓取成功，共 ${items.length} 条`, 'success')
+    }
   } catch (err) {
-    alert('抓取批量失败: ' + err.message)
+    toast('抓取批量失败: ' + (err.message || err), 'error')
   } finally {
     isBatchResolving.value = false
   }
@@ -800,7 +883,7 @@ const enqueueSelectedBatch = async () => {
           const res = await fetch('/api/tasks', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: item.url, cookie: cookieInput.value || null }),
+            body: JSON.stringify({ url: item.url, cookie: cookieInput.value || null, output_dir: homeOutputDir.value || null }),
           })
           return res.ok
         } catch {
@@ -878,6 +961,7 @@ const initWebSocket = () => {
       }
       if (prog.status === 'completed') {
         toast(`下载完成：${prog.title || prog.task_id}`, 'success')
+        loadHistory()
       } else if (prog.status === 'failed') {
         toast(`任务失败：${prog.error_msg || prog.title || prog.task_id}`, 'error')
       }
@@ -1023,5 +1107,11 @@ onMounted(() => {
   loadHistory()
   initWebSocket()
   setInterval(checkEngineHealth, 30_000)
+})
+
+// 切换到历史页时强制刷新
+watch(currentTab, (tab) => {
+  if (tab === 'history') loadHistory()
+  if (tab === 'tasks') loadTasks()
 })
 </script>

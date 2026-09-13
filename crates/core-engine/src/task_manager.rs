@@ -787,11 +787,21 @@ fn resolve_output_dir_checked(requested: &Option<String>, root: &Path) -> Result
     let normalized = normalize_path(&candidate);
     let normalized_root = normalize_path(root);
 
-    if !normalized.starts_with(&normalized_root) {
-        bail!(
-            "输出目录必须位于项目根目录内: {}",
-            normalized.display()
-        );
+    // Relative paths must stay under project root.
+    if !PathBuf::from(raw).is_absolute() && !normalized.starts_with(&normalized_root) {
+        bail!("输出目录必须位于项目根目录内: {}", normalized.display());
+    }
+
+    // Absolute paths: block obvious system directories.
+    let lower = normalized.to_string_lossy().to_lowercase().replace('/', "\\");
+    let blocked = [
+        "\\windows\\",
+        "\\program files",
+        "\\programdata\\",
+        "\\system32",
+    ];
+    if blocked.iter().any(|b| lower.contains(b)) {
+        bail!("不允许将输出目录设为系统目录: {}", normalized.display());
     }
 
     Ok(normalized)

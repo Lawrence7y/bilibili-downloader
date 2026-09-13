@@ -134,6 +134,16 @@ impl SidecarClient {
     }
 
     pub async fn call(&self, method: &str, params: Value) -> Result<Value> {
+        self.call_with_timeout(method, params, std::time::Duration::from_secs(90))
+            .await
+    }
+
+    pub async fn call_with_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: std::time::Duration,
+    ) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let req = JsonRpcRequest {
             jsonrpc: "2.0",
@@ -156,7 +166,7 @@ impl SidecarClient {
             stdin.flush().await?;
         }
 
-        match tokio::time::timeout(std::time::Duration::from_secs(90), rx).await {
+        match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(Ok(val))) => Ok(val),
             Ok(Ok(Err(err_msg))) => bail!("{}", err_msg),
             Ok(Err(_)) => {
@@ -167,7 +177,10 @@ impl SidecarClient {
             Err(_) => {
                 let mut map = self.pending.lock().await;
                 map.remove(&id);
-                bail!("Sidecar request timed out after 90s")
+                bail!(
+                    "Sidecar request timed out after {}s",
+                    timeout.as_secs()
+                )
             }
         }
     }
@@ -222,7 +235,7 @@ impl SidecarClient {
         proxy: Option<&str>,
     ) -> Result<MediaMetadata> {
         let val = self
-            .call(
+            .call_with_timeout(
                 "resolve_douyin_batch",
                 serde_json::json!({
                     "type": batch_type,
@@ -231,6 +244,8 @@ impl SidecarClient {
                     "cookie": cookie,
                     "proxy": proxy
                 }),
+                // Batch crawls many pages; allow up to 3 minutes.
+                std::time::Duration::from_secs(180),
             )
             .await?;
 
