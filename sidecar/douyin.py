@@ -157,11 +157,19 @@ def check_douyin_cookie(cookie: str | None) -> dict[str, Any]:
     }
 
 
-def _build_f2_kwargs(cookie: str | None = None, proxy: str | None = None) -> dict[str, Any]:
+def _build_f2_kwargs(
+    cookie: str | None = None,
+    proxy: str | None = None,
+    *,
+    max_retries: int = 5,
+    timeout: float = 10.0,
+) -> dict[str, Any]:
     """Build kwargs dict for f2 DouyinHandler."""
     clean_cookie = sanitize_cookie(cookie) or ""
     kwargs: dict[str, Any] = {
         "cookie": clean_cookie,
+        "max_retries": max_retries,
+        "timeout": timeout,
         "headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -273,101 +281,225 @@ async def resolve_douyin_batch(
     """Resolve Douyin batch collections (user profile, collection, likes, etc)."""
     from f2.apps.douyin.handler import DouyinHandler
 
-    kwargs = _build_f2_kwargs(cookie, proxy)
+    clean = sanitize_cookie(cookie) or ""
+    if "sessionid" not in clean and "ttwid" not in clean:
+        raise AuthRequiredError(
+            "douyin",
+            "批量抓取需要有效 Cookie（至少包含 sessionid、ttwid）。请在系统设置粘贴后点「保存到本机」再重试",
+        )
+
+    # Batch pages need cookies more strictly; fail faster than single-video path.
+    kwargs = _build_f2_kwargs(cookie, proxy, max_retries=2, timeout=8.0)
     handler = DouyinHandler(kwargs)
 
     sub_items: list[SubItem] = []
     title = f"抖音批量_{target_type}_{target_id}"
     author = ""
+    errors: list[str] = []
+
+    def _items_from_filter(page_filter) -> list[dict]:
+        """Convert a f2 filter page into a list of raw aweme dicts."""
+        # Preferred: f2's own conversion used by handle_user_post
+        to_list = getattr(page_filter, "_to_list", None)
+        if callable(to_list):
+            try:
+                data = to_list()
+                if isinstance(data, list) and data:
+                    return data
+            except Exception as exc:
+                errors.append(f"_to_list failed: {exc}")
+
+        # Fallback: reconstruct from parallel property arrays
+        try:
+            ids = getattr(page_filter, "aweme_id", None) or []
+            if not isinstance(ids, list):
+                ids = [ids]
+            descs = getattr(page_filter, "desc", None) or []
+            if not isinstance(descs, list):
+                descs = [descs]
+            covers = getattr(page_filter, "cover", None) or []
+            if not isinstance(covers, list):
+                covers = [covers]
+            durs = getattr(page_filter, "video_duration", None) or []
+            if not isinstance(durs, list):
+                durs = [durs]
+            imgs_all = getattr(page_filter, "images", None) or []
+            if imgs_all and not isinstance(imgs_all[0], list) and imgs_all[0] is not None:
+                # single page of images lists
+                pass
+            out = []
+            for i, aweme_id in enumerate(ids):
+                if not aweme_id:
+                    continue
+                img_urls = []
+                if i < len(imgs_all) and imgs_all[i]:
+                    raw_imgs = imgs_all[i]
+                    if isinstance(raw_imgs, list):
+                        img_urls = [u for u in raw_imgs if isinstance(u, str) and u]
+                dur = durs[i] if i < len(durs) else 0
+                # video_duration may already be seconds
+                if isinstance(dur, (int, float)) and dur > 10_000:
+                    dur = int(dur // 1000)
+                out.append(
+                    {
+                        "aweme_id": aweme_id,
+                        "desc": descs[i] if i < len(descs) else "",
+                        "cover": covers[i] if i < len(covers) else "",
+                        "duration": int(dur or 0),
+                        "images": img_urls,
+                        "create_time": 0,
+                        "like_count": 0,
+                    }
+                )
+            return out
+        except Exception as exc:
+            errors.append(f"property fallback failed: {exc}")
+            return []
+
+    def _append_items(raw_list: list[dict]) -> None:
+        nonlocal author
+        for aweme in raw_list:
+            if not isinstance(aweme, dict):
+                continue
+            item_id = str(
+                aweme.get("aweme_id")
+                or aweme.get("awemeId")
+                or aweme.get("id")
+                or ""
+            )
+            if not item_id:
+                continue
+            desc = aweme.get("desc") or aweme.get("title") or ""
+            video = aweme.get("video") or {}
+            if not isinstance(video, dict):
+                video = {}
+            dur = aweme.get("duration") or video.get("duration") or 0
+            try:
+                dur = int(dur or 0)
+            except Exception:
+                dur = 0
+            if dur > 10_000:
+                dur = dur // 1000
+            cov = aweme.get("cover") or ""
+            if not cov:
+                cover_obj = video.get("cover") or video.get("origin_cover") or {}
+                if isinstance(cover_obj, dict):
+                    url_list = cover_obj.get("url_list") or []
+                    if url_list:
+                        cov = url_list[0]
+            imgs = aweme.get("images") or []
+            img_urls: list[str] = []
+            if isinstance(imgs, list):
+                for im in imgs:
+                    if isinstance(im, dict):
+                        ul = im.get("url_list") or []
+                        if ul:
+                            img_urls.append(ul[0])
+                    elif isinstance(im, str) and im:
+                        img_urls.append(im)
+            if not author:
+                nick = aweme.get("nickname")
+                if not nick:
+                    author_obj = aweme.get("author")
+                    if isinstance(author_obj, dict):
+                        nick = author_obj.get("nickname")
+                author = str(nick or "")
+            stats = aweme.get("statistics") or {}
+            like_count = stats.get("digg_count", 0) if isinstance(stats, dict) else 0
+            sub_items.append(
+                SubItem(
+                    item_id=item_id,
+                    title=desc or f"作品_{item_id}",
+                    url=f"https://www.douyin.com/video/{item_id}",
+                    duration=dur,
+                    cover_url=str(cov or ""),
+                    author=author,
+                    is_image_post=bool(img_urls),
+                    image_urls=img_urls,
+                    create_time=int(aweme.get("create_time") or 0),
+                    like_count=int(like_count or 0),
+                )
+            )
 
     if target_type == "posts":
-        # First get author profile
         try:
             profile = await handler.fetch_user_profile(sec_user_id=target_id)
             author = getattr(profile, "nickname", "") or ""
-            title = f"{author}的主页作品"
-        except Exception:
-            pass
+            if isinstance(author, list):
+                author = author[0] if author else ""
+            title = f"{author or target_id}的主页作品"
+        except Exception as exc:
+            errors.append(f"profile: {exc}")
 
-        async for post_filter in handler.fetch_user_post_videos(
-            sec_user_id=target_id,
-            max_counts=max_count if max_count > 0 else None,
-        ):
-            if not post_filter.has_aweme:
-                if not post_filter.has_more:
-                    break
-                continue
-
-            # Process aweme list
-            aweme_list = getattr(post_filter, "aweme_list", []) or []
-            for aweme in aweme_list:
-                item_id = str(aweme.get("aweme_id", ""))
-                desc = aweme.get("desc", "")
-                dur = (aweme.get("video", {}).get("duration", 0)) // 1000
-                cov = ""
-                cov_list = aweme.get("video", {}).get("cover", {}).get("url_list", [])
-                if cov_list:
-                    cov = cov_list[0]
-                imgs = aweme.get("images", []) or []
-                img_urls = [im["url_list"][0] for im in imgs if "url_list" in im and im["url_list"]]
-
-                sub_items.append(
-                    SubItem(
-                        item_id=item_id,
-                        title=desc or f"作品_{item_id}",
-                        url=f"https://www.douyin.com/video/{item_id}",
-                        duration=dur,
-                        cover_url=cov,
-                        author=author,
-                        is_image_post=bool(imgs),
-                        image_urls=img_urls,
-                        create_time=aweme.get("create_time", 0),
-                        like_count=aweme.get("statistics", {}).get("digg_count", 0),
-                    )
-                )
+        try:
+            page_count = 20
+            async for post_filter in handler.fetch_user_post_videos(
+                sec_user_id=target_id,
+                page_counts=page_count,
+                max_counts=max_count if max_count > 0 else None,
+            ):
+                has_aweme = bool(getattr(post_filter, "has_aweme", False))
+                if not has_aweme:
+                    if not getattr(post_filter, "has_more", False):
+                        break
+                    continue
+                _append_items(_items_from_filter(post_filter))
                 if max_count > 0 and len(sub_items) >= max_count:
                     break
-            if max_count > 0 and len(sub_items) >= max_count:
-                break
+        except Exception as exc:
+            errors.append(f"fetch_user_post_videos: {exc}")
+            raise RuntimeError(
+                "主页作品抓取失败: "
+                + "; ".join(errors)
+                + "。请确认 Cookie 有效且 sec_user_id 正确"
+            ) from exc
 
     elif target_type == "mix":
-        async for mix_filter in handler.fetch_user_mix_videos(
-            mix_id=target_id,
-            max_counts=max_count if max_count > 0 else None,
-        ):
-            if not mix_filter.has_aweme:
-                break
-            aweme_list = getattr(mix_filter, "aweme_list", []) or []
-            for aweme in aweme_list:
-                item_id = str(aweme.get("aweme_id", ""))
-                desc = aweme.get("desc", "")
-                dur = (aweme.get("video", {}).get("duration", 0)) // 1000
-                cov_list = aweme.get("video", {}).get("cover", {}).get("url_list", [])
-                cov = cov_list[0] if cov_list else ""
-
-                sub_items.append(
-                    SubItem(
-                        item_id=item_id,
-                        title=desc or f"作品_{item_id}",
-                        url=f"https://www.douyin.com/video/{item_id}",
-                        duration=dur,
-                        cover_url=cov,
-                        author=author,
-                        create_time=aweme.get("create_time", 0),
-                    )
-                )
+        try:
+            async for mix_filter in handler.fetch_user_mix_videos(
+                mix_id=target_id,
+                page_counts=20,
+                max_counts=max_count if max_count > 0 else None,
+            ):
+                if not getattr(mix_filter, "has_aweme", False):
+                    if not getattr(mix_filter, "has_more", False):
+                        break
+                    continue
+                _append_items(_items_from_filter(mix_filter))
                 if max_count > 0 and len(sub_items) >= max_count:
                     break
-            if max_count > 0 and len(sub_items) >= max_count:
-                break
+        except Exception as exc:
+            errors.append(f"fetch_user_mix_videos: {exc}")
+            raise RuntimeError(
+                "合集抓取失败: " + "; ".join(errors)
+            ) from exc
+    else:
+        raise ValueError(f"不支持的批量类型: {target_type}（当前仅支持 posts / mix）")
+
+    if max_count > 0:
+        sub_items = sub_items[:max_count]
+
+    if not sub_items:
+        detail = "; ".join(errors) if errors else "接口返回空列表"
+        raise RuntimeError(
+            f"未抓到任何作品（{detail}）。常见原因：未登录 Cookie、主页私密、sec_user_id 错误"
+        )
 
     return MediaMetadata(
         platform="douyin",
         content_type="batch_playlist",
         title=title,
         author=author,
-        url=f"https://www.douyin.com/user/{target_id}" if target_type == "posts" else f"https://www.douyin.com/collection/{target_id}",
+        url=(
+            f"https://www.douyin.com/user/{target_id}"
+            if target_type == "posts"
+            else f"https://www.douyin.com/collection/{target_id}"
+        ),
         author_id=target_id,
         sub_items=sub_items,
-        extra={"batch_type": target_type, "total_count": len(sub_items)},
+        extra={
+            "batch_type": target_type,
+            "total_count": len(sub_items),
+            "errors": errors,
+        },
     )

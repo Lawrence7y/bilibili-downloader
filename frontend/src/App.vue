@@ -847,6 +847,11 @@ const handleResolveDouyinBatch = async () => {
     toast('请先填写主页链接或 ID', 'error')
     return
   }
+  if (!cookieInput.value || !cookieInput.value.trim()) {
+    toast('批量抓取需要 Cookie：请先到「系统设置」粘贴并保存，再回来重试', 'error')
+    currentTab.value = 'settings'
+    return
+  }
   isBatchResolving.value = true
   batchItems.value = []
 
