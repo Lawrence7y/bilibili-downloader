@@ -92,6 +92,7 @@ async fn main() -> Result<()> {
     let api_router = Router::new()
         .route("/health", get(health_check))
         .route("/settings", get(get_settings).put(update_settings))
+        .route("/dialog/pick-folder", post(pick_folder))
         .route("/resolve", post(resolve_url))
         .route("/resolve/douyin/batch", post(resolve_douyin_batch))
         .route("/cookie/check", post(check_cookie))
@@ -146,6 +147,45 @@ async fn update_settings(
     match state.task_manager.update_settings(payload).await {
         Ok(s) => Ok(Json(s)),
         Err(err) => Err((StatusCode::BAD_REQUEST, err.to_string())),
+    }
+}
+
+/// Open a native folder picker and return the selected path.
+/// Must run off the async runtime because the dialog pumps Win32 messages.
+async fn pick_folder(
+    State(state): State<AppState>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let default = payload
+        .get("default")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            state
+                .project_root
+                .join("downloads")
+                .to_string_lossy()
+                .to_string()
+        });
+
+    let picked = tokio::task::spawn_blocking(move || {
+        rfd::FileDialog::new()
+            .set_title("选择下载保存目录")
+            .set_directory(&default)
+            .pick_folder()
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("dialog join error: {e}")))?;
+
+    match picked {
+        Some(path) => Ok(Json(serde_json::json!({
+            "path": path.to_string_lossy(),
+            "cancelled": false,
+        }))),
+        None => Ok(Json(serde_json::json!({
+            "path": null,
+            "cancelled": true,
+        }))),
     }
 }
 

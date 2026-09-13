@@ -120,13 +120,22 @@
                 class="flex-1 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
               />
               <button
+                @click="pickOutputFolder"
+                :disabled="isPickingFolder"
+                class="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold disabled:opacity-50 transition"
+              >
+                <Loader2 v-if="isPickingFolder" class="w-3.5 h-3.5 animate-spin" />
+                <FolderDown v-else class="w-3.5 h-3.5" />
+                <span>{{ isPickingFolder ? '等待选择…' : '选择目录' }}</span>
+              </button>
+              <button
                 @click="persistHomeOutputDir"
                 class="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 transition"
               >
-                保存目录
+                保存
               </button>
             </div>
-            <p class="mt-2 text-[11px] text-slate-400">相对路径基于项目根目录；也可填绝对路径如 D:\Videos</p>
+            <p class="mt-2 text-[11px] text-slate-400">点「选择目录」会弹出系统文件夹窗口；也可手动粘贴路径</p>
           </div>
 
           <!-- 模式 A：单/多链接解析 -->
@@ -689,6 +698,7 @@ const homeModes = [
   { id: 'batch', label: '抖音批量' },
 ]
 const homeOutputDir = ref('downloads')
+const isPickingFolder = ref(false)
 const douyinMaxCount = ref(20)
 
 // 1. 下载中心状态
@@ -780,6 +790,32 @@ const enqueueSingleTask = async () => {
     loadTasks()
   } catch (err) {
     toast('创建任务失败: ' + err.message, 'error')
+  }
+}
+
+const pickOutputFolder = async () => {
+  if (isPickingFolder.value) return
+  isPickingFolder.value = true
+  toast('请在弹出的系统窗口中选择文件夹…', 'info')
+  try {
+    const res = await fetch('/api/dialog/pick-folder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ default: homeOutputDir.value || 'downloads' }),
+    })
+    if (!res.ok) throw new Error(await res.text())
+    const data = await res.json()
+    if (data.cancelled || !data.path) {
+      toast('已取消选择', 'info')
+      return
+    }
+    homeOutputDir.value = data.path
+    // Auto-save after pick
+    await persistHomeOutputDir()
+  } catch (err) {
+    toast('选择目录失败: ' + (err.message || err), 'error')
+  } finally {
+    isPickingFolder.value = false
   }
 }
 
