@@ -57,18 +57,25 @@ jobs:
           npx tauri android init
           npx tauri android build --apk --target aarch64
 
-      - name: Locate and Collect APK
+      - name: Locate, Sign and Collect APK
         run: |
           mkdir -p release-apk
-          APK_PATH=$(find frontend/src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n 1)
-          echo "Generated APK: $APK_PATH"
-          if [ -n "$APK_PATH" ] && [ -f "$APK_PATH" ]; then
-            cp "$APK_PATH" release-apk/BillBillDownloader-v1.0.1-arm64.apk
-            ls -lh release-apk/
-          else
-            echo "Error: APK not found!"
-            exit 1
-          fi
+          RAW_APK=$(find frontend/src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          echo "Found raw APK at: $RAW_APK"
+          
+          # Generate signing keystore
+          keytool -genkey -v -keystore release.keystore -alias billbill -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=BillBill, OU=App, O=Dev, L=Beijing, ST=Beijing, C=CN"
+          
+          # Find apksigner in Android SDK
+          APKSIGNER=$(find $ANDROID_HOME/build-tools -name apksigner | sort -V | tail -n 1)
+          echo "Using apksigner at: $APKSIGNER"
+          
+          # Sign APK with v1, v2, and v3 signatures
+          $APKSIGNER sign --ks release.keystore --ks-pass pass:123456 --ks-key-alias billbill --key-pass pass:123456 --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --out release-apk/BillBillDownloader-v1.0.1-arm64.apk "$RAW_APK"
+          
+          # Verify signature
+          $APKSIGNER verify --verbose release-apk/BillBillDownloader-v1.0.1-arm64.apk
+          ls -lh release-apk/
 
       - name: Upload APK as Workflow Artifact
         uses: actions/upload-artifact@v4
