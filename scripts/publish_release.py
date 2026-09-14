@@ -22,41 +22,19 @@ def publish():
     repo = "Lawrence7y/bilibili-downloader"
     api_url = f"https://api.github.com/repos/{repo}/releases"
 
-    body_desc = """## 🚀 BillBill Downloader v1.0.0 (Rust Web 版)
+    body_desc = """## 🚀 BillBill Downloader v1.0.1 (Rust Web 版)
 
-全新一代高性能全平台多媒体与通用网页视频下载器！
-
-### ✨ 核心亮点
-
-- **全网通用网页嗅探 (Universal Web Media Resolver)**：
-  - 支持 HTML5 视频、DPlayer、ArtPlayer、MacCMS、嵌入式 Iframe 递归解析。
-  - 支持 Playwright 动态无头网络拦截，自动跳过前贴片广告。
-  - 原生 M3U8 (HLS) 流无损合并转储与 AES-128 自动解密。
-- **极限并发下载引擎 (Rust Core Engine)**：
-  - 8~32 线程激进自适应分块切片，彻底突破国内各大 CDN 的单连接 QoS 限速。
-  - 独创轻量 Range GET 206 探活机制，100% 激活分块并行下载。
-  - 引入 256KB BufWriter 内存写入缓冲，消除 95% 以上磁盘 I/O 阻塞。
-  - DASH 视频轨与音频轨并发双流同时下载，时间减半。
-- **主流平台深度支持**：
-  - 抖音单视频、图文多图、主页/合集作品批量高速抓取。
-  - Bilibili / YouTube 高清流与独立音频提取 (MP3/M4A/FLAC/WAV)。
-- **现代化体验**：
-  - 本地原生文件夹选择器 (rfd)。
-  - WebSocket 微秒级实时进度/速度推送。
-  - SQLite + FTS5 本地历史归档与全文搜索。
-
-### 📦 运行说明
-
-1. 下载解压 **BillBillDownloader-v1.0.0-windows-x64.zip**；
-2. 确保电脑已安装 Python 3.11+ 和 FFmpeg；
-3. 双击 `启动程序.bat` 即可自动启动并在浏览器中打开使用！
+- 修复部分网站下载到片头贴片广告的问题（扩充广告 CDN 屏蔽列表，过滤 `bxcdn.net` / `bkcdn.net` 等广告视频流）。
+- 增强针对 Next.js / SSR 动态站点的元数据直出与免广告解析（毫秒级提取正片）。
+- 新增对伪装成 PNG 图片的自定义流媒体（如 `roUd` chunk 混淆 HLS）的高性能多线程解包与自动转储支持。
+- 实测 25 分钟无广告完整视频直接秒级解析并无损落盘。
 """
 
     # 1. Create release
     req_data = json.dumps({
-        "tag_name": "v1.0.0",
+        "tag_name": "v1.0.1",
         "target_commitish": "main",
-        "name": "BillBill Downloader v1.0.0 (Rust Web 版)",
+        "name": "BillBill Downloader v1.0.1 (Rust Web 版)",
         "body": body_desc,
         "draft": False,
         "prerelease": False,
@@ -82,8 +60,8 @@ def publish():
         print(f"Created Release: {html_url} (ID: {release_id})")
 
     # 2. Upload asset
-    asset_file = "dist/BillBillDownloader-v1.0.0-windows-x64.zip"
-    asset_name = "BillBillDownloader-v1.0.0-windows-x64.zip"
+    asset_file = "dist/BillBillDownloader-v1.0.1-windows-x64.zip"
+    asset_name = "BillBillDownloader-v1.0.1-windows-x64.zip"
     upload_url = upload_url_template.split("{")[0] + f"?name={asset_name}"
 
     with open(asset_file, "rb") as f:
