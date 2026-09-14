@@ -48,16 +48,32 @@ async fn main() -> Result<()> {
     info!("Project root: {:?}", project_root);
 
     // 1. Initialize Sidecar
-    let python_bin = project_root.join("bilibili-downloader/.venv/Scripts/python.exe");
-    let script_path = project_root.join("sidecar/server.py");
+    let python_candidates = [
+        project_root.join("bilibili-downloader/.venv/Scripts/python.exe"),
+        project_root.join(".venv/Scripts/python.exe"),
+        project_root.join(".venv/bin/python"),
+        project_root.join("venv/Scripts/python.exe"),
+        project_root.join("python/python.exe"),
+    ];
 
-    if !python_bin.exists() {
-        anyhow::bail!(
-            "Python sidecar interpreter not found: {:?}\n\
-             Create a venv at bilibili-downloader/.venv or set DDL_PROJECT_ROOT.",
-            python_bin
-        );
+    let mut python_bin = python_candidates
+        .into_iter()
+        .find(|p| p.exists());
+
+    if python_bin.is_none() {
+        if let Ok(p) = which::which("python").or_else(|_| which::which("python3")) {
+            python_bin = Some(p);
+        }
     }
+
+    let python_bin = python_bin.ok_or_else(|| {
+        anyhow::anyhow!(
+            "未找到 Python 解释器。请在项目目录创建 .venv，或安装 Python 3 并加入系统 PATH。"
+        )
+    })?;
+    info!("Using Python interpreter: {:?}", python_bin);
+
+    let script_path = project_root.join("sidecar/server.py");
     if !script_path.exists() {
         anyhow::bail!("Sidecar script not found: {:?}", script_path);
     }

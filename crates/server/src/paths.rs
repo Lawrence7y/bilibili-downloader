@@ -33,7 +33,10 @@ pub fn project_root() -> PathBuf {
 }
 
 fn is_project_root(dir: &Path) -> bool {
-    dir.join("sidecar").join("server.py").is_file() && dir.join("Cargo.toml").is_file()
+    dir.join("sidecar").join("server.py").is_file()
+        && (dir.join("Cargo.toml").is_file()
+            || dir.join("frontend").join("dist").is_dir()
+            || dir.join("server.exe").is_file())
 }
 
 fn walk_up_for_root(start: &Path) -> Option<PathBuf> {
