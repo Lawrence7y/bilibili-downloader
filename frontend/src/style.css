@@ -4,9 +4,23 @@
 
 @layer base {
   body {
-    @apply bg-slate-50 text-slate-900 antialiased dark:bg-slate-900 dark:text-slate-100;
+    @apply bg-slate-50 text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100;
     font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+    -webkit-tap-highlight-color: transparent;
   }
+}
+
+/* Mobile safe area helpers */
+.safe-top {
+  padding-top: max(0.75rem, env(safe-area-inset-top));
+}
+
+.safe-bottom {
+  padding-bottom: max(0.6rem, env(safe-area-inset-bottom));
+}
+
+.mobile-nav-active {
+  @apply text-indigo-600 dark:text-indigo-400 font-semibold;
 }
 
 /* Custom smooth scrollbar */

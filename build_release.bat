@@ -49,13 +49,13 @@ echo pause
 ) > dist\BillBillDL\启动程序.bat
 
 echo [4/4] Creating ZIP archive...
-powershell -Command "Compress-Archive -Path 'dist\BillBillDL\*' -DestinationPath 'dist\BillBillDownloader-v1.0.0-windows-x64.zip' -Force"
+powershell -Command "Compress-Archive -Path 'dist\BillBillDL\*' -DestinationPath 'dist\BillBillDownloader-v1.0.2-windows-x64.zip' -Force"
 
 echo.
 echo ========================================================
 echo   Build Successful!
 echo   Folder:  dist\BillBillDL
-echo   Archive: dist\BillBillDownloader-v1.0.0-windows-x64.zip
+echo   Archive: dist\BillBillDownloader-v1.0.2-windows-x64.zip
 echo ========================================================
 
 :fail

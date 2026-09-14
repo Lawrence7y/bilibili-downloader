@@ -2,8 +2,8 @@
   <div :class="['flex h-screen w-screen overflow-hidden', isDark ? 'dark' : '']">
     <div class="flex h-full w-full bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       
-      <!-- 1. 左侧 Sidebar 导航栏 -->
-      <aside class="w-64 flex-shrink-0 bg-white border-r border-slate-200 dark:bg-slate-900 dark:border-slate-800 flex flex-col justify-between">
+      <!-- 1. 左侧 Sidebar 导航栏（桌面端显示，移动端隐藏） -->
+      <aside class="hidden md:flex w-64 flex-shrink-0 bg-white border-r border-slate-200 dark:bg-slate-900 dark:border-slate-800 flex-col justify-between">
         <div>
           <!-- Logo 品牌 -->
           <div class="h-16 flex items-center gap-3 px-6 border-b border-slate-100 dark:border-slate-800/60">
@@ -12,7 +12,7 @@
             </div>
             <div>
               <h1 class="font-bold text-base tracking-tight leading-none text-slate-800 dark:text-white">BillBill DL</h1>
-              <span class="text-[11px] font-medium text-slate-400 dark:text-slate-500">Rust + Web 极速重构版</span>
+              <span class="text-[11px] font-medium text-slate-400 dark:text-slate-500">全平台媒体下载器</span>
             </div>
           </div>
 
@@ -54,18 +54,18 @@
                   engineStatus === 'degraded' ? 'bg-amber-500' : 'bg-slate-400'
                 ]"
               ></span>
-              <span v-if="engineStatus === 'ok'">Rust 核心引擎就绪</span>
+              <span v-if="engineStatus === 'ok'">核心引擎就绪</span>
               <span v-else-if="engineStatus === 'degraded'">引擎降级运行</span>
               <span v-else>引擎检测中…</span>
             </span>
-            <span class="font-mono text-[10px]">v0.1.0</span>
+            <span class="font-mono text-[10px]">v1.0.1</span>
           </div>
 
           <button
             @click="isDark = !isDark"
             class="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 dark:text-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700/80 transition-colors"
           >
-            <Sun v-if="isDark" class="w-3.5 h-3.5" />
+            <Sun v-if="isDark" class="w-3.5 h-3.5 text-amber-400" />
             <Moon v-else class="w-3.5 h-3.5" />
             <span>{{ isDark ? '浅色模式' : '深色模式' }}</span>
           </button>
@@ -73,7 +73,39 @@
       </aside>
 
       <!-- 2. 主内容区域 Main Content -->
-      <main class="flex-1 flex flex-col h-full overflow-hidden bg-slate-50 dark:bg-slate-950">
+      <main class="flex-1 flex flex-col h-full overflow-hidden bg-slate-50 dark:bg-slate-950 relative">
+        <!-- 移动端专属顶部标题栏 -->
+        <header class="md:hidden flex items-center justify-between px-4 py-2.5 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 safe-top flex-shrink-0 z-30 shadow-sm">
+          <div class="flex items-center gap-2.5">
+            <div class="h-8 w-8 rounded-xl bg-indigo-600 flex items-center justify-center text-white font-bold shadow-md shadow-indigo-500/20">
+              <Download class="w-4 h-4" />
+            </div>
+            <div>
+              <h1 class="font-bold text-sm tracking-tight leading-none text-slate-800 dark:text-white">BillBill DL</h1>
+              <div class="flex items-center gap-1.5 text-[10px] text-slate-400 mt-1">
+                <span
+                  :class="[
+                    'w-1.5 h-1.5 rounded-full',
+                    engineStatus === 'ok' ? 'bg-emerald-500 animate-pulse' :
+                    engineStatus === 'degraded' ? 'bg-amber-500' : 'bg-slate-400'
+                  ]"
+                ></span>
+                <span>{{ engineStatus === 'ok' ? '已就绪' : '连接中…' }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-1.5">
+            <button
+              @click="isDark = !isDark"
+              class="p-2 rounded-xl text-slate-600 bg-slate-100 hover:bg-slate-200 dark:text-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 transition-colors"
+            >
+              <Sun v-if="isDark" class="w-4 h-4 text-amber-400" />
+              <Moon v-else class="w-4 h-4" />
+            </button>
+          </div>
+        </header>
+
         <!-- WS 断线横幅 -->
         <div
           v-if="wsStatus !== 'open'"
@@ -86,7 +118,7 @@
         </div>
         
         <!-- 页面一：下载中心（单链接 + 抖音批量） -->
-        <section v-if="currentTab === 'home'" class="flex-1 overflow-y-auto p-8 max-w-5xl mx-auto w-full space-y-6">
+        <section v-if="currentTab === 'home'" class="flex-1 overflow-y-auto p-4 md:p-8 pb-28 md:pb-8 max-w-5xl mx-auto w-full space-y-4 md:space-y-6">
           <div class="space-y-1">
             <h2 class="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">下载中心</h2>
             <p class="text-sm text-slate-500 dark:text-slate-400">支持抖音、Bilibili、YouTube 等；抖音主页/合集可批量抓取</p>
@@ -318,7 +350,7 @@
         </section>
 
         <!-- 页面三：实时任务看板 Tasks -->
-        <section v-if="currentTab === 'tasks'" class="flex-1 overflow-y-auto p-8 max-w-5xl mx-auto w-full space-y-6">
+        <section v-if="currentTab === 'tasks'" class="flex-1 overflow-y-auto p-4 md:p-8 pb-28 md:pb-8 max-w-5xl mx-auto w-full space-y-4 md:space-y-6">
           <div class="flex items-center justify-between gap-4 flex-wrap">
             <div>
               <h2 class="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">下载任务</h2>
@@ -447,13 +479,13 @@
         </section>
 
         <!-- 页面四：历史记录 History -->
-        <section v-if="currentTab === 'history'" class="flex-1 overflow-y-auto p-8 max-w-5xl mx-auto w-full space-y-6">
-          <div class="flex items-center justify-between">
+        <section v-if="currentTab === 'history'" class="flex-1 overflow-y-auto p-4 md:p-8 pb-28 md:pb-8 max-w-5xl mx-auto w-full space-y-4 md:space-y-6">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h2 class="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">下载历史</h2>
               <p class="text-sm text-slate-500 dark:text-slate-400">本地 SQLite 存储，已启用全文检索 (FTS5)</p>
             </div>
-            <div class="w-64">
+            <div class="w-full sm:w-64">
               <input
                 v-model="historySearchQuery"
                 @input="handleSearchHistory"
@@ -464,8 +496,8 @@
             </div>
           </div>
 
-          <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-sm">
-            <table class="w-full text-left text-xs">
+          <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-x-auto shadow-sm">
+            <table class="w-full text-left text-xs min-w-[500px]">
               <thead class="bg-slate-50 dark:bg-slate-800/60 text-slate-500 font-semibold border-b border-slate-200 dark:border-slate-800">
                 <tr>
                   <th class="p-3.5">标题</th>
@@ -492,7 +524,7 @@
         </section>
 
         <!-- 页面五：设置中心 Settings -->
-        <section v-if="currentTab === 'settings'" class="flex-1 overflow-y-auto p-8 max-w-4xl mx-auto w-full space-y-6">
+        <section v-if="currentTab === 'settings'" class="flex-1 overflow-y-auto p-4 md:p-8 pb-28 md:pb-8 max-w-4xl mx-auto w-full space-y-4 md:space-y-6">
           <div class="space-y-1">
             <h2 class="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">系统设置与诊断</h2>
             <p class="text-sm text-slate-500 dark:text-slate-400">Cookie 健康度诊断、网络代理配置及运行环境自愈体检</p>
@@ -654,6 +686,36 @@
         </section>
 
       </main>
+
+      <!-- 3. 移动端底部沉浸式导航栏 -->
+      <nav class="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 px-2 py-1 safe-bottom flex items-center justify-around shadow-lg">
+        <button
+          v-for="item in navItems"
+          :key="item.id"
+          @click="currentTab = item.id"
+          :class="[
+            'flex flex-col items-center justify-center py-1 px-2 rounded-xl transition-all duration-150 relative flex-1 active:scale-95',
+            currentTab === item.id
+              ? 'text-indigo-600 dark:text-indigo-400 font-semibold'
+              : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+          ]"
+        >
+          <div class="relative">
+            <component
+              :is="item.icon"
+              class="w-5 h-5 transition-transform duration-150"
+              :class="currentTab === item.id ? 'scale-110' : ''"
+            />
+            <span
+              v-if="item.id === 'tasks' && activeTaskCount > 0"
+              class="absolute -top-1.5 -right-2 px-1.5 py-0.2 text-[9px] rounded-full bg-indigo-600 text-white font-bold leading-tight"
+            >
+              {{ activeTaskCount }}
+            </span>
+          </div>
+          <span class="text-[10px] mt-1">{{ item.label }}</span>
+        </button>
+      </nav>
     </div>
 
     <!-- Toast 通知 -->
