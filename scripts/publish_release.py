@@ -22,19 +22,26 @@ def publish():
     repo = "Lawrence7y/bilibili-downloader"
     api_url = f"https://api.github.com/repos/{repo}/releases"
 
-    body_desc = """## 🚀 BillBill Downloader v1.0.1 (Rust Web 版)
+    body_desc = """## 🚀 BillBill Downloader v1.0.2 (移动端适配与跨端升级版)
 
-- 修复部分网站下载到片头贴片广告的问题（扩充广告 CDN 屏蔽列表，过滤 `bxcdn.net` / `bkcdn.net` 等广告视频流）。
-- 增强针对 Next.js / SSR 动态站点的元数据直出与免广告解析（毫秒级提取正片）。
-- 新增对伪装成 PNG 图片的自定义流媒体（如 `roUd` chunk 混淆 HLS）的高性能多线程解包与自动转储支持。
-- 实测 25 分钟无广告完整视频直接秒级解析并无损落盘。
+### ✨ 本次更新重点
+
+- **全新移动端沉浸式 UI 适配**：
+  - 手机端专属**底部毛玻璃导航栏 (Bottom Navigation Bar)**，支持单手舒适触控。
+  - 手机端专属**顶部状态栏与安全区适配 (Safe Area Insets)**，完美贴合刘海屏与挖孔屏。
+  - 单链接解析、批量抓取卡片自适应手机纵向流排版，触控按钮热区与动效全面提升。
+  - 全新加入「后端服务地址配置」，手机 App / 局域网接入时一键直连电脑端下载核心。
+- **全网通用网页视频嗅探与去广告增强**：
+  - 支持 HTML5 视频、DPlayer、ArtPlayer、MacCMS 等任意非主流视频站点。
+  - 彻底阻断片头视频广告，支持定制混淆 HLS (如 PNG roUd 封装) 极速无损转储。
+- **极限并发下载引擎 (16~32 线程)** 与 Win32 内存缓冲 I/O。
 """
 
     # 1. Create release
     req_data = json.dumps({
-        "tag_name": "v1.0.1",
+        "tag_name": "v1.0.2",
         "target_commitish": "main",
-        "name": "BillBill Downloader v1.0.1 (Rust Web 版)",
+        "name": "BillBill Downloader v1.0.2 (移动端 UI 适配版)",
         "body": body_desc,
         "draft": False,
         "prerelease": False,
@@ -60,8 +67,8 @@ def publish():
         print(f"Created Release: {html_url} (ID: {release_id})")
 
     # 2. Upload asset
-    asset_file = "dist/BillBillDownloader-v1.0.1-windows-x64.zip"
-    asset_name = "BillBillDownloader-v1.0.1-windows-x64.zip"
+    asset_file = "dist/BillBillDownloader-v1.0.2-windows-x64.zip"
+    asset_name = "BillBillDownloader-v1.0.2-windows-x64.zip"
     upload_url = upload_url_template.split("{")[0] + f"?name={asset_name}"
 
     with open(asset_file, "rb") as f:
