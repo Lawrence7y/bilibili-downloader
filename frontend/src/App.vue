@@ -568,6 +568,30 @@
             </div>
           </div>
 
+          <!-- 移动端 / 远程服务地址配置 -->
+          <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-sm space-y-3">
+            <div class="flex items-center justify-between">
+              <div>
+                <h3 class="font-bold text-sm text-slate-900 dark:text-white">后端服务地址 (Server Host)</h3>
+                <p class="text-xs text-slate-500">用于手机 App (APK) 连回家中电脑。若在电脑浏览器内使用，请保持留空。</p>
+              </div>
+              <button
+                @click="saveServerHost"
+                class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white transition-colors"
+              >
+                保存并重连
+              </button>
+            </div>
+            <div>
+              <input
+                v-model="serverHost"
+                type="text"
+                placeholder="例如：http://192.168.124.5:18080（留空为默认同源请求）"
+                class="w-full rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+              />
+            </div>
+          </div>
+
           <!-- 下载偏好设置 -->
           <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
             <h3 class="font-bold text-sm text-slate-900 dark:text-white">下载偏好（保存到本机数据库）</h3>
@@ -696,9 +720,39 @@ const defaultSettings = {
 }
 const appSettings = ref({ ...defaultSettings })
 
+// 后端服务器地址配置（用于移动端 App / APK 连接 PC 后端）
+const serverHost = ref(localStorage.getItem('ddl_server_host') || '')
+
+const getApiBase = () => {
+  if (serverHost.value && serverHost.value.trim()) {
+    return serverHost.value.trim().replace(/\/+$/, '')
+  }
+  return ''
+}
+
+const saveServerHost = () => {
+  if (serverHost.value && serverHost.value.trim()) {
+    localStorage.setItem('ddl_server_host', serverHost.value.trim().replace(/\/+$/, ''))
+    toast('后端服务器地址已保存，正在重新连接…', 'success')
+  } else {
+    localStorage.removeItem('ddl_server_host')
+    toast('已切换为默认相对路径模式', 'info')
+  }
+  initWebSocket()
+  loadAppSettings()
+  checkEngineHealth()
+  loadTasks()
+}
+
+const apiFetch = (url, options) => {
+  const base = getApiBase()
+  const full = base ? (base + (url.startsWith('/') ? url : '/' + url)) : url
+  return fetch(full, options)
+}
+
 const loadAppSettings = async () => {
   try {
-    const res = await fetch('/api/settings')
+    const res = await apiFetch('/api/settings')
     if (res.ok) {
       appSettings.value = { ...defaultSettings, ...(await res.json()) }
       homeOutputDir.value = appSettings.value.output_dir || 'downloads'
@@ -708,7 +762,7 @@ const loadAppSettings = async () => {
 
 const saveAppSettings = async () => {
   try {
-    const res = await fetch('/api/settings', {
+    const res = await apiFetch('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(appSettings.value),
@@ -780,7 +834,7 @@ const handleResolveUrl = async () => {
   selectedFormatId.value = ''
 
   try {
-    const res = await fetch('/api/resolve', {
+    const res = await apiFetch('/api/resolve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: inputUrl.value.trim(), cookie: cookieInput.value || null }),
@@ -812,7 +866,7 @@ const handleResolveUrl = async () => {
 const enqueueSingleTask = async () => {
   if (!resolvedMeta.value) return
   try {
-    const res = await fetch('/api/tasks', {
+    const res = await apiFetch('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -837,7 +891,7 @@ const pickOutputFolder = async () => {
   isPickingFolder.value = true
   toast('请在弹出的系统窗口中选择文件夹…', 'info')
   try {
-    const res = await fetch('/api/dialog/pick-folder', {
+    const res = await apiFetch('/api/dialog/pick-folder', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ default: homeOutputDir.value || 'downloads' }),
@@ -861,7 +915,7 @@ const pickOutputFolder = async () => {
 const persistHomeOutputDir = async () => {
   try {
     const next = { ...appSettings.value, output_dir: homeOutputDir.value || 'downloads' }
-    const res = await fetch('/api/settings', {
+    const res = await apiFetch('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(next),
@@ -913,7 +967,7 @@ const handleResolveDouyinBatch = async () => {
   toast(`正在抓取最多 ${maxCount} 条，请稍候…`, 'info')
 
   try {
-    const res = await fetch('/api/resolve/douyin/batch', {
+    const res = await apiFetch('/api/resolve/douyin/batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -960,7 +1014,7 @@ const enqueueSelectedBatch = async () => {
     const results = await Promise.all(
       chunk.map(async (item) => {
         try {
-          const res = await fetch('/api/tasks', {
+          const res = await apiFetch('/api/tasks', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1006,7 +1060,7 @@ const visibleTasks = computed(() =>
 
 const loadTasks = async () => {
   try {
-    const res = await fetch('/api/tasks')
+    const res = await apiFetch('/api/tasks')
     if (res.ok) {
       tasks.value = await res.json()
     }
@@ -1014,13 +1068,13 @@ const loadTasks = async () => {
 }
 
 const cancelTask = async (taskId) => {
-  await fetch(`/api/tasks/${taskId}/cancel`, { method: 'POST' })
+  await apiFetch(`/api/tasks/${taskId}/cancel`, { method: 'POST' })
   loadTasks()
 }
 
 const retryTask = async (taskId) => {
   try {
-    const res = await fetch(`/api/tasks/${taskId}/retry`, { method: 'POST' })
+    const res = await apiFetch(`/api/tasks/${taskId}/retry`, { method: 'POST' })
     if (!res.ok) throw new Error(await res.text())
     toast('已重新入队', 'success')
     loadTasks()
@@ -1031,8 +1085,16 @@ const retryTask = async (taskId) => {
 
 const initWebSocket = () => {
   wsStatus.value = 'connecting'
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const wsUrl = `${protocol}//${window.location.host}/api/ws`
+  const base = getApiBase()
+  let wsUrl
+  if (base) {
+    const wsProto = base.startsWith('https:') ? 'wss:' : 'ws:'
+    const host = base.replace(/^https?:\/\//, '')
+    wsUrl = `${wsProto}//${host}/api/ws`
+  } else {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    wsUrl = `${protocol}//${window.location.host}/api/ws`
+  }
   let ws
   try {
     ws = new WebSocket(wsUrl)
@@ -1080,7 +1142,7 @@ const historySearchQuery = ref('')
 
 const loadHistory = async () => {
   try {
-    const res = await fetch('/api/history')
+    const res = await apiFetch('/api/history')
     if (res.ok) {
       historyRecords.value = await res.json()
     }
@@ -1094,7 +1156,7 @@ const handleSearchHistory = async () => {
     return
   }
   try {
-    const res = await fetch(`/api/history/search?q=${encodeURIComponent(q)}`)
+    const res = await apiFetch(`/api/history/search?q=${encodeURIComponent(q)}`)
     if (res.ok) {
       historyRecords.value = await res.json()
     }
@@ -1108,7 +1170,7 @@ const cookieDiagnosis = ref(null)
 
 const checkCookieHealth = async () => {
   try {
-    const res = await fetch('/api/cookie/check', {
+    const res = await apiFetch('/api/cookie/check', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ platform: cookiePlatform.value, cookie: cookieInput.value }),
@@ -1153,7 +1215,7 @@ const loadCookieLocal = () => {
 
 const checkEngineHealth = async () => {
   try {
-    const res = await fetch('/api/health')
+    const res = await apiFetch('/api/health')
     if (res.ok) {
       const data = await res.json()
       engineStatus.value = data.status === 'ok' ? 'ok' : 'degraded'
