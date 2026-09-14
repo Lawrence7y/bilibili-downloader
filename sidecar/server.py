@@ -13,6 +13,33 @@ _project_root = str(Path(__file__).resolve().parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+def _sanitize_proxy_env() -> None:
+    """Detect and remove dead local proxy environment variables that block network calls."""
+    import socket
+    from urllib.parse import urlparse
+
+    keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]
+    for k in keys:
+        val = os.environ.get(k)
+        if not val:
+            continue
+        try:
+            parsed = urlparse(val if "://" in val else f"http://{val}")
+            host = parsed.hostname or ""
+            port = parsed.port
+            if host in ("127.0.0.1", "localhost", "::1") and port:
+                try:
+                    with socket.create_connection((host, port), timeout=0.2):
+                        pass
+                except Exception:
+                    sys.stderr.write(f"[sidecar] Dead local proxy detected in {k}={val}, removing to prevent WinError 10061\n")
+                    sys.stderr.flush()
+                    os.environ.pop(k, None)
+        except Exception:
+            pass
+
+_sanitize_proxy_env()
+
 import threading
 import traceback
 from typing import Any
@@ -130,9 +157,19 @@ async def handle_request(raw_line: str) -> str:
 
             # Fallback to yt-dlp resolver (Bilibili, YouTube, etc.)
             loop = asyncio.get_running_loop()
-            meta = await loop.run_in_executor(
-                None, lambda: resolve_with_ytdlp(url, cookie=cookie, proxy=proxy)
-            )
+            try:
+                meta = await loop.run_in_executor(
+                    None, lambda: resolve_with_ytdlp(url, cookie=cookie, proxy=proxy)
+                )
+                if meta and (meta.streams or meta.sub_items):
+                    return make_jsonrpc_response(req_id, meta.to_dict())
+            except Exception:
+                # yt-dlp does not support this site or failed, fall through to universal generic sniffer
+                pass
+
+            # Universal Generic Web Sniffer (for arbitrary CMS, DPlayer, HTML5 video, m3u8 sites)
+            from sidecar.generic import resolve_generic_web
+            meta = await resolve_generic_web(url, cookie=cookie, proxy=proxy)
             return make_jsonrpc_response(req_id, meta.to_dict())
 
         # 4. Resolve Douyin batch explicitly
@@ -192,7 +229,7 @@ def _stdin_reader_thread(queue: asyncio.Queue, loop: asyncio.AbstractEventLoop):
 
 
 async def main():
-    """Main async loop."""
+    """Main async loop handling JSON-RPC requests concurrently."""
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[str | None] = asyncio.Queue()
 
@@ -200,13 +237,30 @@ async def main():
     t = threading.Thread(target=_stdin_reader_thread, args=(queue, loop), daemon=True)
     t.start()
 
+    active_tasks: set[asyncio.Task] = set()
+
+    async def _process_line(raw: str) -> None:
+        try:
+            response = await handle_request(raw)
+            if response:
+                _safe_write_stdout(response)
+        except Exception as exc:
+            try:
+                err_resp = make_jsonrpc_error(None, -32000, f"Unhandled server exception: {exc}")
+                _safe_write_stdout(err_resp)
+            except Exception:
+                pass
+
     while True:
         line = await queue.get()
         if line is None:  # EOF reached
             break
-        response = await handle_request(line)
-        if response:
-            _safe_write_stdout(response)
+        task = asyncio.create_task(_process_line(line))
+        active_tasks.add(task)
+        task.add_done_callback(active_tasks.discard)
+
+    if active_tasks:
+        await asyncio.gather(*active_tasks, return_exceptions=True)
 
 
 if __name__ == "__main__":

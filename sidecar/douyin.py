@@ -10,6 +10,29 @@ from urllib.parse import parse_qs, urlparse
 
 from sidecar.protocol import AuthRequiredError, MediaMetadata, StreamInfo, SubItem
 
+# Patch f2 TokenManager to gracefully fallback to gen_false_msToken if real msToken endpoint fails
+try:
+    from f2.apps.douyin.utils import TokenManager
+    _orig_gen_real_msToken = TokenManager.gen_real_msToken
+
+    @classmethod
+    def _safe_gen_real_msToken(cls):
+        try:
+            return _orig_gen_real_msToken()
+        except Exception:
+            return cls.gen_false_msToken()
+
+    TokenManager.gen_real_msToken = _safe_gen_real_msToken
+except Exception:
+    pass
+
+# Globally disable Bark notification to avoid useless network calls to api.day.app
+try:
+    from f2.apps.bark.utils import ClientConfManager as BarkConfManager
+    BarkConfManager.enable_bark = classmethod(lambda cls: False)
+except Exception:
+    pass
+
 
 _USER_PROFILE_PATTERNS = [
     r"https?://(?:www\.)?douyin\.com/user/([a-zA-Z0-9_-]+)",
@@ -162,7 +185,7 @@ def _build_f2_kwargs(
     proxy: str | None = None,
     *,
     max_retries: int = 5,
-    timeout: float = 10.0,
+    timeout: float = 1.0,
 ) -> dict[str, Any]:
     """Build kwargs dict for f2 DouyinHandler."""
     clean_cookie = sanitize_cookie(cookie) or ""
@@ -198,6 +221,7 @@ async def resolve_douyin_video(
 
     kwargs = _build_f2_kwargs(cookie, proxy)
     handler = DouyinHandler(kwargs)
+    handler.enable_bark = False
     try:
         detail = await handler.fetch_one_video(aweme_id=video_id)
     except Exception as exc:
@@ -440,8 +464,9 @@ async def resolve_douyin_batch(
             "批量抓取需要有效 Cookie（至少包含 sessionid、ttwid）。请在系统设置粘贴后点「保存到本机」再重试",
         )
 
-    kwargs = _build_f2_kwargs(cookie, proxy, max_retries=2, timeout=8.0)
+    kwargs = _build_f2_kwargs(cookie, proxy, max_retries=2, timeout=1.0)
     handler = DouyinHandler(kwargs)
+    handler.enable_bark = False
 
     sub_items: list[SubItem] = []
     title = f"抖音批量_{target_type}_{target_id}"
@@ -449,20 +474,15 @@ async def resolve_douyin_batch(
     errors: list[str] = []
 
     if target_type == "posts":
-        try:
-            profile = await handler.fetch_user_profile(sec_user_id=target_id)
-            nick = getattr(profile, "nickname", "") or ""
-            if isinstance(nick, list):
-                nick = nick[0] if nick else ""
-            author_state["author"] = str(nick or "")
-            title = f"{author_state['author'] or target_id}的主页作品"
-        except Exception as exc:
-            errors.append(f"profile: {exc}")
+        # Launch profile fetch concurrently in the background so it doesn't block video pagination
+        profile_task = asyncio.create_task(handler.fetch_user_profile(sec_user_id=target_id))
 
         try:
+            # Douyin web API supports up to 35 items per page, reducing roundtrips significantly
+            batch_page_size = 35 if (max_count <= 0 or max_count > 20) else max_count
             async for post_filter in handler.fetch_user_post_videos(
                 sec_user_id=target_id,
-                page_counts=20,
+                page_counts=batch_page_size,
                 max_counts=max_count if max_count > 0 else None,
             ):
                 has_aweme = bool(getattr(post_filter, "has_aweme", False))
@@ -483,11 +503,28 @@ async def resolve_douyin_batch(
                 + "。请确认 Cookie 有效且 sec_user_id 正确"
             ) from exc
 
+        # Retrieve profile nickname if not already captured from aweme items
+        if not author_state.get("author"):
+            try:
+                profile = await asyncio.wait_for(asyncio.shield(profile_task), timeout=2.0)
+                nick = getattr(profile, "nickname", "") or ""
+                if isinstance(nick, list):
+                    nick = nick[0] if nick else ""
+                if nick:
+                    author_state["author"] = str(nick)
+            except Exception as exc:
+                errors.append(f"profile: {exc}")
+        else:
+            profile_task.cancel()
+
+        title = f"{author_state['author'] or target_id}的主页作品"
+
     elif target_type == "mix":
         try:
+            batch_page_size = 35 if (max_count <= 0 or max_count > 20) else max_count
             async for mix_filter in handler.fetch_user_mix_videos(
                 mix_id=target_id,
-                page_counts=20,
+                page_counts=batch_page_size,
                 max_counts=max_count if max_count > 0 else None,
             ):
                 if not getattr(mix_filter, "has_aweme", False):

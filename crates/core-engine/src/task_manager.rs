@@ -34,6 +34,9 @@ pub struct CreateTaskRequest {
     pub extract_audio: Option<String>, // e.g. "mp3", "m4a", None
     pub cookie: Option<String>,
     pub proxy: Option<String>,
+    /// Pre-known or pre-resolved title to display before/during resolve.
+    #[serde(default)]
+    pub title: Option<String>,
     /// Preferred stream format_id from a prior /resolve call.
     #[serde(default)]
     pub format_id: Option<String>,
@@ -156,7 +159,7 @@ impl TaskManager {
                 return Ok((permit, guard));
             }
             drop(permit);
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -265,8 +268,11 @@ impl TaskManager {
         let cancel_token = Arc::new(AtomicBool::new(false));
 
         let display_title = req
-            .url
-            .trim()
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| req.url.trim())
             .to_string();
 
         let item = TaskItem {
@@ -274,11 +280,11 @@ impl TaskManager {
             url: req.url.clone(),
             title: Arc::new(Mutex::new(display_title.clone())),
             platform: Arc::new(Mutex::new("auto".to_string())),
-            status: Arc::new(Mutex::new(TaskStatus::Resolving)),
+            status: Arc::new(Mutex::new(TaskStatus::Pending)),
             cancel_token: Arc::clone(&cancel_token),
             progress: Arc::new(Mutex::new(TaskProgress {
                 task_id: task_id.clone(),
-                status: TaskStatus::Resolving,
+                status: TaskStatus::Pending,
                 total_bytes: 0,
                 downloaded_bytes: 0,
                 speed_bps: 0,
@@ -299,6 +305,8 @@ impl TaskManager {
         {
             let mut tasks = self.tasks.lock().await;
             tasks.insert(task_id.clone(), item.clone());
+            let prog = item.progress.lock().await.clone();
+            let _ = self.progress_broadcast.send(prog);
         }
 
         let this = Arc::clone(self);
@@ -583,31 +591,47 @@ impl TaskManager {
         if let Some(stream) = muxed_stream {
             // Single stream download
             let v_url = stream.video_url.as_ref().unwrap();
-            let (tx, mut rx) = tokio::sync::mpsc::channel::<DownloadProgress>(100);
+            let is_m3u8 = stream.protocol == "m3u8" || v_url.contains(".m3u8");
 
-            let item_clone = item.clone();
-            let p_task = tokio::spawn(async move {
-                while let Some(prog) = rx.recv().await {
-                    let mut p = item_clone.progress.lock().await;
-                    p.status = TaskStatus::Downloading;
-                    p.total_bytes = prog.total_bytes;
-                    p.downloaded_bytes = prog.downloaded_bytes;
-                    p.speed_bps = prog.speed_bps;
-                    p.percentage = prog.percentage;
-                }
-            });
+            let dl_result = if is_m3u8 {
+                self.update_progress(&item, TaskStatus::Downloading, 0, 0, 0, 20.0, None)
+                    .await;
+                self.ffmpeg
+                    .download_m3u8(
+                        v_url,
+                        &final_output,
+                        &stream.headers,
+                        Arc::clone(&item.cancel_token),
+                    )
+                    .await
+            } else {
+                let (tx, mut rx) = tokio::sync::mpsc::channel::<DownloadProgress>(100);
 
-            let dl_result = downloader
-                .download(
-                    v_url,
-                    &final_output,
-                    &stream.headers,
-                    4,
-                    Arc::clone(&item.cancel_token),
-                    Some(tx),
-                )
-                .await;
-            let _ = p_task.await;
+                let item_clone = item.clone();
+                let p_task = tokio::spawn(async move {
+                    while let Some(prog) = rx.recv().await {
+                        let mut p = item_clone.progress.lock().await;
+                        p.status = TaskStatus::Downloading;
+                        p.total_bytes = prog.total_bytes;
+                        p.downloaded_bytes = prog.downloaded_bytes;
+                        p.speed_bps = prog.speed_bps;
+                        p.percentage = prog.percentage;
+                    }
+                });
+
+                let res = downloader
+                    .download(
+                        v_url,
+                        &final_output,
+                        &stream.headers,
+                        16,
+                        Arc::clone(&item.cancel_token),
+                        Some(tx),
+                    )
+                    .await;
+                let _ = p_task.await;
+                res
+            };
 
             if let Err(e) = dl_result {
                 if item.cancel_token.load(Ordering::Relaxed) {
@@ -621,23 +645,52 @@ impl TaskManager {
                 bail!(err_str);
             }
         } else if let (Some(v_stream), Some(a_stream)) = (video_only, audio_only) {
-            // DASH separate streams: download video and audio, then merge
+            // DASH separate streams: download video and audio CONCURRENTLY, then merge
             let tmp_v = out_dir.join(format!("{}.v.mp4", task_id));
             let tmp_a = out_dir.join(format!("{}.a.m4a", task_id));
 
-            info!("Downloading separate video stream: {:?}", tmp_v);
-            if let Err(e) = downloader
-                .download(
-                    v_stream.video_url.as_ref().unwrap(),
-                    &tmp_v,
-                    &v_stream.headers,
-                    4,
-                    Arc::clone(&item.cancel_token),
-                    None,
-                )
-                .await
-            {
+            info!(
+                "Downloading separate video & audio streams concurrently: {:?}, {:?}",
+                tmp_v, tmp_a
+            );
+
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<DownloadProgress>(100);
+            let item_clone = item.clone();
+            let p_task = tokio::spawn(async move {
+                while let Some(prog) = rx.recv().await {
+                    let mut p = item_clone.progress.lock().await;
+                    p.status = TaskStatus::Downloading;
+                    p.total_bytes = prog.total_bytes;
+                    p.downloaded_bytes = prog.downloaded_bytes;
+                    p.speed_bps = prog.speed_bps;
+                    p.percentage = prog.percentage;
+                }
+            });
+
+            let v_future = downloader.download(
+                v_stream.video_url.as_ref().unwrap(),
+                &tmp_v,
+                &v_stream.headers,
+                16,
+                Arc::clone(&item.cancel_token),
+                Some(tx),
+            );
+
+            let a_future = downloader.download(
+                a_stream.audio_url.as_ref().unwrap(),
+                &tmp_a,
+                &a_stream.headers,
+                4,
+                Arc::clone(&item.cancel_token),
+                None,
+            );
+
+            let (v_res, a_res) = tokio::join!(v_future, a_future);
+            let _ = p_task.await;
+
+            if let Err(e) = v_res {
                 let _ = tokio::fs::remove_file(&tmp_v).await;
+                let _ = tokio::fs::remove_file(&tmp_a).await;
                 if item.cancel_token.load(Ordering::Relaxed) {
                     self.update_progress(&item, TaskStatus::Cancelled, 0, 0, 0, 0.0, None)
                         .await;
@@ -649,18 +702,7 @@ impl TaskManager {
                 bail!(err_str);
             }
 
-            info!("Downloading separate audio stream: {:?}", tmp_a);
-            if let Err(e) = downloader
-                .download(
-                    a_stream.audio_url.as_ref().unwrap(),
-                    &tmp_a,
-                    &a_stream.headers,
-                    4,
-                    Arc::clone(&item.cancel_token),
-                    None,
-                )
-                .await
-            {
+            if let Err(e) = a_res {
                 let _ = tokio::fs::remove_file(&tmp_v).await;
                 let _ = tokio::fs::remove_file(&tmp_a).await;
                 if item.cancel_token.load(Ordering::Relaxed) {
@@ -696,17 +738,47 @@ impl TaskManager {
                 .as_ref()
                 .or(stream.audio_url.as_ref())
                 .context("流缺少可下载 URL")?;
-            if let Err(e) = downloader
-                .download(
-                    v_url,
-                    &final_output,
-                    &stream.headers,
-                    4,
-                    Arc::clone(&item.cancel_token),
-                    None,
-                )
-                .await
-            {
+            let is_m3u8 = stream.protocol == "m3u8" || v_url.contains(".m3u8");
+
+            let dl_res = if is_m3u8 {
+                self.update_progress(&item, TaskStatus::Downloading, 0, 0, 0, 20.0, None)
+                    .await;
+                self.ffmpeg
+                    .download_m3u8(
+                        v_url,
+                        &final_output,
+                        &stream.headers,
+                        Arc::clone(&item.cancel_token),
+                    )
+                    .await
+            } else {
+                let (tx, mut rx) = tokio::sync::mpsc::channel::<DownloadProgress>(100);
+                let item_clone = item.clone();
+                let p_task = tokio::spawn(async move {
+                    while let Some(prog) = rx.recv().await {
+                        let mut p = item_clone.progress.lock().await;
+                        p.status = TaskStatus::Downloading;
+                        p.total_bytes = prog.total_bytes;
+                        p.downloaded_bytes = prog.downloaded_bytes;
+                        p.speed_bps = prog.speed_bps;
+                        p.percentage = prog.percentage;
+                    }
+                });
+                let res = downloader
+                    .download(
+                        v_url,
+                        &final_output,
+                        &stream.headers,
+                        16,
+                        Arc::clone(&item.cancel_token),
+                        Some(tx),
+                    )
+                    .await;
+                let _ = p_task.await;
+                res
+            };
+
+            if let Err(e) = dl_res {
                 if item.cancel_token.load(Ordering::Relaxed) {
                     self.update_progress(&item, TaskStatus::Cancelled, 0, 0, 0, 0.0, None)
                         .await;

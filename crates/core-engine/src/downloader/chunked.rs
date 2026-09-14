@@ -12,9 +12,9 @@ use std::time::Instant;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::info;
 
-const MIN_PARALLEL_SIZE: u64 = 20 * 1024 * 1024; // 20 MB
+const MIN_PARALLEL_SIZE: u64 = 5 * 1024 * 1024; // 5 MB
 
 #[derive(Clone, Debug)]
 pub struct DownloadProgress {
@@ -22,6 +22,16 @@ pub struct DownloadProgress {
     pub downloaded_bytes: u64,
     pub speed_bps: u64,
     pub percentage: f32,
+}
+
+fn parse_total_from_content_range(val: &str) -> Option<u64> {
+    // Standard format: "bytes 0-0/1234567"
+    let parts: Vec<&str> = val.split('/').collect();
+    if parts.len() == 2 {
+        parts[1].trim().parse::<u64>().ok()
+    } else {
+        None
+    }
 }
 
 pub struct ChunkedDownloader {
@@ -32,6 +42,9 @@ pub struct ChunkedDownloader {
 impl ChunkedDownloader {
     pub fn new(proxy: Option<&str>, limiter: Option<RateLimiter>) -> Result<Self> {
         let mut builder = Client::builder()
+            .tcp_nodelay(true)
+            .pool_max_idle_per_host(64)
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
             .timeout(std::time::Duration::from_secs(120))
             .connect_timeout(std::time::Duration::from_secs(15));
 
@@ -57,31 +70,65 @@ impl ChunkedDownloader {
         headers
     }
 
-    pub async fn probe(&self, url: &str, headers: &HashMap<String, String>) -> (u64, bool) {
+    pub async fn probe(&self, url: &str, headers: &HashMap<String, String>) -> (u64, bool, String) {
         let req_headers = Self::build_headers(headers);
-        let resp = match self.client.head(url).headers(req_headers).send().await {
-            Ok(r) => r,
-            Err(e) => {
-                debug!("HEAD probe failed: {}, fallback to GET probe", e);
-                return (0, false);
+
+        // 1. Try quick HEAD request first
+        if let Ok(resp) = self.client.head(url).headers(req_headers.clone()).send().await {
+            if resp.status().is_success() {
+                let final_url = resp.url().to_string();
+                let content_length = resp
+                    .headers()
+                    .get(CONTENT_LENGTH)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(0);
+
+                let accept_ranges = resp
+                    .headers()
+                    .get(ACCEPT_RANGES)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| v.eq_ignore_ascii_case("bytes"))
+                    .unwrap_or(false);
+
+                // If HEAD confirmed Range support and returned content-length, return immediately
+                if accept_ranges && content_length > 0 {
+                    return (content_length, true, final_url);
+                }
             }
-        };
+        }
 
-        let content_length = resp
-            .headers()
-            .get(CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(0);
+        // 2. Fallback to smart GET probe with Range: bytes=0-0
+        // Many Chinese CDNs (Douyin, Bilibili CDN, etc.) forbid HEAD or omit Accept-Ranges headers,
+        // but fully honor HTTP Range requests with 206 Partial Content.
+        let mut range_headers = req_headers;
+        range_headers.insert(RANGE, HeaderValue::from_static("bytes=0-0"));
 
-        let accept_ranges = resp
-            .headers()
-            .get(ACCEPT_RANGES)
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.eq_ignore_ascii_case("bytes"))
-            .unwrap_or(false);
+        if let Ok(resp) = self.client.get(url).headers(range_headers).send().await {
+            let final_url = resp.url().to_string();
+            let status = resp.status();
+            if status == reqwest::StatusCode::PARTIAL_CONTENT {
+                // 206 Partial Content -> Definitively supports Range!
+                let total_size = resp
+                    .headers()
+                    .get(reqwest::header::CONTENT_RANGE)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(parse_total_from_content_range)
+                    .unwrap_or(0);
+                return (total_size, true, final_url);
+            } else if status.is_success() {
+                // 200 OK -> Range ignored, single-stream download only
+                let total_size = resp
+                    .headers()
+                    .get(CONTENT_LENGTH)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(0);
+                return (total_size, false, final_url);
+            }
+        }
 
-        (content_length, accept_ranges)
+        (0, false, url.to_string())
     }
 
     pub async fn download(
@@ -98,7 +145,7 @@ impl ChunkedDownloader {
         }
 
         let part_path = PathBuf::from(format!("{}.part", output_path.to_string_lossy()));
-        let (total_size, accept_ranges) = self.probe(url, headers).await;
+        let (total_size, accept_ranges, final_url) = self.probe(url, headers).await;
 
         // Resume: if a .part file already exists, continue from its length (single-stream).
         let existing = tokio::fs::metadata(&part_path).await.map(|m| m.len()).unwrap_or(0);
@@ -117,8 +164,8 @@ impl ChunkedDownloader {
         };
 
         info!(
-            "Download starting: {} (size: {} bytes, range: {}, resume_from: {})",
-            url, total_size, accept_ranges, resume_from
+            "Download starting: {} -> {} (size: {} bytes, range: {}, resume_from: {})",
+            url, final_url, total_size, accept_ranges, resume_from
         );
 
         let downloaded_bytes = Arc::new(AtomicU64::new(resume_from));
@@ -174,19 +221,31 @@ impl ChunkedDownloader {
             && concurrency > 1
             && resume_from == 0
         {
+            // Aggressive parts allocation to break CDN per-connection QoS limits:
+            // CDN limits single stream to ~1-2 MB/s. 
+            // 8-32 connections allow saturating 100M-1000M broadband.
+            let parts = if total_size >= 200 * 1024 * 1024 {
+                concurrency.clamp(16, 32)
+            } else if total_size >= 50 * 1024 * 1024 {
+                concurrency.clamp(8, 24)
+            } else if total_size >= 10 * 1024 * 1024 {
+                concurrency.clamp(4, 16)
+            } else {
+                concurrency.clamp(2, 8)
+            };
             self.download_parallel_range(
-                url,
+                &final_url,
                 &part_path,
                 headers,
                 total_size,
-                concurrency,
+                parts,
                 Arc::clone(&downloaded_bytes),
                 Arc::clone(&cancel_token),
             )
             .await
         } else {
             self.download_single_stream(
-                url,
+                &final_url,
                 &part_path,
                 headers,
                 resume_from,
@@ -239,20 +298,21 @@ impl ChunkedDownloader {
             .await?
             .error_for_status()?;
 
-        let mut file = if resume_from > 0 {
+        let file = if resume_from > 0 {
             OpenOptions::new().write(true).create(true).open(part_path).await?
         } else {
             File::create(part_path).await?
         };
+        let mut writer = tokio::io::BufWriter::with_capacity(256 * 1024, file);
         if resume_from > 0 {
-            file.seek(SeekFrom::End(0)).await?;
+            writer.seek(SeekFrom::End(0)).await?;
         }
 
         let mut stream = resp.bytes_stream();
 
         while let Some(chunk_res) = stream.next().await {
             if cancel_token.load(Ordering::Relaxed) {
-                file.flush().await.ok();
+                writer.flush().await.ok();
                 bail!("Download cancelled by user");
             }
 
@@ -261,11 +321,11 @@ impl ChunkedDownloader {
                 lim.consume(chunk.len() as u64).await;
             }
 
-            file.write_all(&chunk).await?;
+            writer.write_all(&chunk).await?;
             downloaded.fetch_add(chunk.len() as u64, Ordering::Relaxed);
         }
 
-        file.flush().await?;
+        writer.flush().await?;
         Ok(())
     }
 
@@ -315,12 +375,14 @@ impl ChunkedDownloader {
                     .await?
                     .error_for_status()?;
 
-                let mut file = OpenOptions::new().write(true).open(&path_buf).await?;
-                file.seek(SeekFrom::Start(start)).await?;
+                let file = OpenOptions::new().write(true).open(&path_buf).await?;
+                let mut writer = tokio::io::BufWriter::with_capacity(256 * 1024, file);
+                writer.seek(SeekFrom::Start(start)).await?;
 
                 let mut stream = resp.bytes_stream();
                 while let Some(chunk_res) = stream.next().await {
                     if cancel.load(Ordering::Relaxed) {
+                        writer.flush().await.ok();
                         bail!("Download cancelled");
                     }
                     let chunk = chunk_res?;
@@ -328,11 +390,11 @@ impl ChunkedDownloader {
                         l.consume(chunk.len() as u64).await;
                     }
 
-                    file.write_all(&chunk).await?;
+                    writer.write_all(&chunk).await?;
                     dl_counter.fetch_add(chunk.len() as u64, Ordering::Relaxed);
                 }
 
-                file.flush().await?;
+                writer.flush().await?;
                 Ok::<(), anyhow::Error>(())
             });
 

@@ -122,4 +122,72 @@ impl FFmpegController {
 
         Ok(())
     }
+
+    pub async fn download_m3u8(
+        &self,
+        m3u8_url: &str,
+        output_path: &Path,
+        headers: &std::collections::HashMap<String, String>,
+        cancel_token: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<()> {
+        info!("FFmpeg downloading M3U8: {} -> {:?}", m3u8_url, output_path);
+
+        if let Some(parent) = output_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        let mut header_str = String::new();
+        for (k, v) in headers {
+            header_str.push_str(&format!("{}: {}\r\n", k, v));
+        }
+
+        let mut cmd = Command::new(&self.ffmpeg_bin);
+        cmd.arg("-y");
+
+        if !header_str.is_empty() {
+            cmd.arg("-headers").arg(&header_str);
+        }
+
+        cmd.args([
+            "-i",
+            m3u8_url,
+            "-c",
+            "copy",
+            "-bsf:a",
+            "aac_adtstoasc",
+            output_path.to_str().unwrap(),
+        ]);
+
+        let mut child = cmd.spawn().with_context(|| {
+            format!(
+                "无法启动 FFmpeg（{:?}）下载 M3U8。请确认 ffmpeg 可用",
+                self.ffmpeg_bin
+            )
+        })?;
+
+        loop {
+            if cancel_token.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = child.kill().await;
+                bail!("Download cancelled by user");
+            }
+
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if !status.success() {
+                        bail!("FFmpeg M3U8 下载失败（exit {:?}）", status.code());
+                    }
+                    break;
+                }
+                Ok(None) => {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                }
+                Err(e) => {
+                    bail!("FFmpeg 等待失败: {}", e);
+                }
+            }
+        }
+
+        info!("FFmpeg M3U8 download completed: {:?}", output_path);
+        Ok(())
+    }
 }

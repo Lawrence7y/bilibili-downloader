@@ -963,7 +963,12 @@ const enqueueSelectedBatch = async () => {
           const res = await fetch('/api/tasks', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: item.url, cookie: cookieInput.value || null, output_dir: homeOutputDir.value || null }),
+            body: JSON.stringify({
+              url: item.url,
+              cookie: cookieInput.value || null,
+              output_dir: homeOutputDir.value || null,
+              title: item.title || null,
+            }),
           })
           return res.ok
         } catch {

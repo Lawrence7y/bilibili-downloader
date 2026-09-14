@@ -10,6 +10,10 @@ echo.
 rem Ensure we run from the project root (this .bat's directory)
 cd /d "%~dp0"
 
+rem Clear dead or stale process-level proxy variables so they don't break local network requests
+if "%HTTP_PROXY%"=="http://127.0.0.1:8780" set HTTP_PROXY=
+if "%HTTPS_PROXY%"=="http://127.0.0.1:8780" set HTTPS_PROXY=
+
 set DDL_PROJECT_ROOT=%CD%
 if "%DDL_PORT%"=="" set DDL_PORT=18080
 
