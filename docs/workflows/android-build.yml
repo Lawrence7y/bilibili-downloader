@@ -55,7 +55,7 @@ jobs:
         working-directory: frontend
         run: |
           npx tauri android init
-          npx tauri android build --apk --target aarch64-linux-android
+          npx tauri android build --apk --target aarch64
 
       - name: Locate and Collect APK
         run: |
