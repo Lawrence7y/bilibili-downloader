@@ -131,11 +131,18 @@ async fn main() -> Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(18080);
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    // Bind to 0.0.0.0 by default to allow LAN mobile devices (e.g. Android phone over WiFi)
+    let host_ip: std::net::IpAddr = std::env::var("DDL_HOST")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| std::net::IpAddr::from([0, 0, 0, 0]));
+    let addr = SocketAddr::from((host_ip, port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to bind {addr}: {e}. Try set DDL_PORT to a free port."))?;
     info!("Server listening on http://{}", addr);
+    info!("Local PC access:  http://127.0.0.1:{}", port);
+    info!("LAN Phone access: http://<Your-LAN-IP>:{}", port);
     axum::serve(listener, app).await?;
 
     Ok(())

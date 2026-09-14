@@ -41,6 +41,8 @@ echo title BillBill Downloader
 echo cd /d "%%~dp0"
 echo set DDL_PROJECT_ROOT=%%CD%%
 echo if "%%DDL_PORT%%"=="" set DDL_PORT=18080
+echo echo 本机电脑访问: http://127.0.0.1:%%DDL_PORT%%
+echo echo 局域网/手机访问: 浏览器打开 http://192.168.124.5:%%DDL_PORT%% ^(需连接同一 WiFi^)
 echo start "" http://127.0.0.1:%%DDL_PORT%%
 echo server.exe
 echo pause

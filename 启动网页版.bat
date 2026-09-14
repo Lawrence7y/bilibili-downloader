@@ -40,7 +40,8 @@ if not exist "frontend\dist\index.html" (
 )
 
 echo [3/3] Starting server...
-echo URL: http://127.0.0.1:%DDL_PORT%
+echo 本机电脑访问: http://127.0.0.1:%DDL_PORT%
+echo 局域网/手机访问: http://192.168.124.5:%DDL_PORT% (需连接同一 WiFi)
 echo.
 
 start "" http://127.0.0.1:%DDL_PORT%
