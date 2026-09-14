@@ -188,6 +188,23 @@ async def handle_request(raw_line: str) -> str:
             )
             return make_jsonrpc_response(req_id, meta.to_dict())
 
+        # 5. Download custom stream (e.g. roud_hls or custom obfuscated streams)
+        elif method == "download_stream":
+            stream_url = str(params.get("url", "")).strip()
+            output_path = str(params.get("output_path", "")).strip()
+            protocol = str(params.get("protocol", "http")).strip()
+            headers = params.get("headers") or {}
+
+            if not stream_url or not output_path:
+                return make_jsonrpc_error(req_id, -32602, "Missing 'url' or 'output_path'")
+
+            if protocol == "roud_hls":
+                from sidecar.generic import download_roud_stream
+                await download_roud_stream(stream_url, output_path, headers=headers)
+                return make_jsonrpc_response(req_id, {"status": "ok", "output_path": output_path})
+            else:
+                return make_jsonrpc_error(req_id, -32602, f"Unsupported stream protocol: {protocol}")
+
         else:
             return make_jsonrpc_error(req_id, -32601, f"Method not found: {method}")
 

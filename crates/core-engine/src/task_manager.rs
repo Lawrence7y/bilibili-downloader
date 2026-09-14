@@ -591,9 +591,21 @@ impl TaskManager {
         if let Some(stream) = muxed_stream {
             // Single stream download
             let v_url = stream.video_url.as_ref().unwrap();
+            let is_sidecar_hls = stream.protocol == "roud_hls" || stream.protocol == "sidecar_hls";
             let is_m3u8 = stream.protocol == "m3u8" || v_url.contains(".m3u8");
 
-            let dl_result = if is_m3u8 {
+            let dl_result = if is_sidecar_hls {
+                self.update_progress(&item, TaskStatus::Downloading, 0, 0, 0, 15.0, None)
+                    .await;
+                self.sidecar
+                    .download_stream(
+                        v_url,
+                        &final_output.to_string_lossy(),
+                        &stream.protocol,
+                        &stream.headers,
+                    )
+                    .await
+            } else if is_m3u8 {
                 self.update_progress(&item, TaskStatus::Downloading, 0, 0, 0, 20.0, None)
                     .await;
                 self.ffmpeg
@@ -738,9 +750,21 @@ impl TaskManager {
                 .as_ref()
                 .or(stream.audio_url.as_ref())
                 .context("流缺少可下载 URL")?;
+            let is_sidecar_hls = stream.protocol == "roud_hls" || stream.protocol == "sidecar_hls";
             let is_m3u8 = stream.protocol == "m3u8" || v_url.contains(".m3u8");
 
-            let dl_res = if is_m3u8 {
+            let dl_res = if is_sidecar_hls {
+                self.update_progress(&item, TaskStatus::Downloading, 0, 0, 0, 15.0, None)
+                    .await;
+                self.sidecar
+                    .download_stream(
+                        v_url,
+                        &final_output.to_string_lossy(),
+                        &stream.protocol,
+                        &stream.headers,
+                    )
+                    .await
+            } else if is_m3u8 {
                 self.update_progress(&item, TaskStatus::Downloading, 0, 0, 0, 20.0, None)
                     .await;
                 self.ffmpeg

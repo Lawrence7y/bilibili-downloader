@@ -252,4 +252,25 @@ impl SidecarClient {
         let meta: MediaMetadata = serde_json::from_value(val)?;
         Ok(meta)
     }
+
+    pub async fn download_stream(
+        &self,
+        url: &str,
+        output_path: &str,
+        protocol: &str,
+        headers: &HashMap<String, String>,
+    ) -> Result<()> {
+        self.call_with_timeout(
+            "download_stream",
+            serde_json::json!({
+                "url": url,
+                "output_path": output_path,
+                "protocol": protocol,
+                "headers": headers,
+            }),
+            std::time::Duration::from_secs(1800),
+        )
+        .await?;
+        Ok(())
+    }
 }

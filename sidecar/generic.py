@@ -27,7 +27,7 @@ NON_VIDEO_MARKERS = (
 )
 
 AD_TRACKING_DOMAINS = (
-    "tsyndicate.com", "playhubconnect.com", "clammyendearedkeg.com",
+    "tsyndicate.com", "tsyndicate.net", "playhubconnect.com", "clammyendearedkeg.com",
     "googlesyndication.com", "doubleclick.net", "googleadservices.com",
     "adservice.google.com", "imasdk.googleapis.com", "adnxs.com", "appnexus.com",
     "criteo.com", "criteo.net", "taboola.com", "outbrain.com", "moatads.com",
@@ -38,7 +38,15 @@ AD_TRACKING_DOMAINS = (
     "propellerads.com", "popads.net", "exoclick.com", "hilltopads.net",
     "clickadu.com", "adskeeper.com", "adcash.com", "mgid.com", "revcontent.com",
     "mediavine.com", "ezoic.net", "pixfuture.com", "fuseplatform.net",
-    "magsrv.com", "trafficjunky.com", "ptelastaxo.com",
+    "magsrv.com", "trafficjunky.com", "trafficjunky.net", "ptelastaxo.com",
+    "bxcdn.net", "bkcdn.net", "popcash.net", "popcash.com", "realsrv.com",
+)
+
+AD_URL_PATTERNS = (
+    r"/library/\d+/[a-f0-9]+\.mp4", # standard ExoClick/bxcdn/bkcdn ad video clips
+    r"/vast[/?]",
+    r"/delivery/[a-z]+",
+    r"/ads?/",
 )
 
 DEFAULT_UA = (
@@ -59,7 +67,11 @@ def is_ad_or_tracking(url: str) -> bool:
         return True
     low = url.lower()
     host = _hostname_of(low)
-    return any(host == d or host.endswith("." + d) for d in AD_TRACKING_DOMAINS)
+    if any(host == d or host.endswith("." + d) for d in AD_TRACKING_DOMAINS):
+        return True
+    if any(re.search(pat, low) for pat in AD_URL_PATTERNS):
+        return True
+    return False
 
 
 def is_non_video_media(url: str) -> bool:
@@ -292,6 +304,140 @@ async def _sniff_with_playwright(
     return captured_urls, page_title, page_cover
 
 
+def unwrap_roud(data: bytes) -> bytes:
+    """Unwrap custom PNG-wrapped roUd chunk data (used by rou.video and Next.js media sites)."""
+    PNG_MAGIC = b'\x89PNG\r\n\x1a\n'
+    if data.startswith(PNG_MAGIC):
+        import struct, zlib
+        pos = len(PNG_MAGIC)
+        while pos + 8 <= len(data):
+            l, ctype = struct.unpack('>I4s', data[pos:pos+8])
+            chunk_data = data[pos+8 : pos+8+l]
+            if ctype == b'roUd':
+                flag = chunk_data[0]
+                payload = chunk_data[1:]
+                if flag & 1:
+                    payload = zlib.decompress(payload, -zlib.MAX_WBITS) if payload[0] != 0x78 else zlib.decompress(payload)
+                return payload
+            pos += 8 + l + 4
+    return data
+
+
+def _extract_from_next_data(html: str, base_url: str) -> MediaMetadata | None:
+    """Extract video metadata and streaming API from Next.js SSR state (__NEXT_DATA__)."""
+    m = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.S)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(1))
+        page_props = data.get("props", {}).get("pageProps", {})
+        video = page_props.get("video") or {}
+        if not video or not isinstance(video, dict):
+            return None
+
+        video_id = str(video.get("id") or "")
+        if not video_id:
+            return None
+
+        title = video.get("nameZh") or video.get("name") or ""
+        duration = int(float(video.get("duration", 0) or 0))
+        cover = video.get("coverImageUrl") or ""
+
+        host = _hostname_of(base_url)
+        # Check if site has api/hls endpoint (like rou.video)
+        hls_url = f"https://{host}/api/hls/{video_id}"
+
+        stream = StreamInfo(
+            format_id="original",
+            protocol="roud_hls",
+            video_url=hls_url,
+            ext="mp4",
+            resolution="720p",
+            headers={
+                "User-Agent": DEFAULT_UA,
+                "Referer": base_url,
+            }
+        )
+        return MediaMetadata(
+            platform=host,
+            content_type="single_video",
+            title=title or f"{host}_{video_id}",
+            author=host,
+            url=base_url,
+            duration=duration,
+            cover_url=cover,
+            streams=[stream],
+            extra={
+                "video_id": video_id,
+                "is_roud": True,
+            }
+        )
+    except Exception:
+        return None
+
+
+async def download_roud_stream(
+    hls_api_url: str,
+    output_path: str,
+    headers: dict[str, str] | None = None,
+) -> None:
+    """Download and assemble a roUd-obfuscated HLS stream to an MP4 file."""
+    import httpx, subprocess, os, time
+
+    req_headers = dict(headers or {})
+    if "User-Agent" not in req_headers:
+        req_headers["User-Agent"] = DEFAULT_UA
+
+    async with httpx.AsyncClient(headers=req_headers, timeout=30.0) as client:
+        # Step 1: get master playlist
+        r1 = await client.get(hls_api_url)
+        master_url = unwrap_roud(r1.content).decode("utf-8").strip()
+
+        # Step 2: get media playlist with segment URLs
+        r2 = await client.get(master_url)
+        media_m3u8 = unwrap_roud(r2.content).decode("utf-8")
+        seg_urls = [line.strip() for line in media_m3u8.splitlines() if line.startswith("https://") or line.startswith("http://")]
+        total_segs = len(seg_urls)
+        if total_segs == 0:
+            raise RuntimeError(f"HLS playlist has no segments: {master_url}")
+
+        # Step 3: concurrent download with 16 workers
+        sem = asyncio.Semaphore(16)
+        downloaded: list[bytes | None] = [None] * total_segs
+
+        async def fetch_seg(idx: int, u: str):
+            async with sem:
+                for retry in range(3):
+                    try:
+                        resp = await client.get(u)
+                        downloaded[idx] = unwrap_roud(resp.content)
+                        break
+                    except Exception:
+                        if retry == 2:
+                            raise
+                        await asyncio.sleep(1)
+
+        await asyncio.gather(*[fetch_seg(i, u) for i, u in enumerate(seg_urls)])
+
+        temp_ts = output_path + ".tmp.ts"
+        with open(temp_ts, "wb") as f:
+            for chunk in downloaded:
+                if chunk:
+                    f.write(chunk)
+
+        # Mux TS to MP4 using ffmpeg
+        cmd = ["ffmpeg", "-y", "-i", temp_ts, "-c", "copy", "-bsf:a", "aac_adtstoasc", output_path]
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"FFmpeg muxing failed: {stderr.decode(errors='ignore')}")
+
+        try:
+            os.remove(temp_ts)
+        except OSError:
+            pass
+
+
 async def resolve_generic_web(
     url: str,
     cookie: str | None = None,
@@ -305,6 +451,12 @@ async def resolve_generic_web(
         html = await loop.run_in_executor(None, lambda: _fetch_html(url, cookie=cookie, proxy=proxy))
     except Exception as exc:
         html = ""
+
+    if html:
+        # Check Next.js / Nuxt SSR state first (instant 50ms extraction, bypasses ads)
+        ssr_meta = _extract_from_next_data(html, url)
+        if ssr_meta:
+            return ssr_meta
 
     title, cover = "", ""
     candidates: list[str] = []
